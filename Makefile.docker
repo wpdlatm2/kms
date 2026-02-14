@@ -241,3 +241,23 @@ help: ## 도움말 표시
 	@echo ""
 	@echo "Management:"
 	@grep -E '^docker-(backup|restore|clean|shell|inspect|stats).*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'
+
+# HTTPS/TLS 인증서
+.PHONY: generate-certs setup-letsencrypt web-ui-http web-ui-https
+
+generate-certs:
+	@chmod +x scripts/generate-certs.sh
+	@./scripts/generate-certs.sh
+
+setup-letsencrypt:
+	@chmod +x scripts/setup-letsencrypt.sh
+	@./scripts/setup-letsencrypt.sh
+
+# 웹 UI 서버
+web-ui-http:
+	@echo "🌐 웹 UI 서버 시작 (HTTP 모드)"
+	@cd cmd/web-ui && go run main.go
+
+web-ui-https: generate-certs
+	@echo "🔒 웹 UI 서버 시작 (HTTPS 모드)"
+	@cd cmd/web-ui && go run main.go

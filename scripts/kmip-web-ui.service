@@ -1,0 +1,29 @@
+[Unit]
+Description=KMIP Web UI Server (HTTPS)
+After=network.target
+
+[Service]
+Type=simple
+User=kmip
+Group=kmip
+WorkingDirectory=/opt/kmip-server
+Environment="TLS_CERT_FILE=/opt/kmip-server/certs/server.crt"
+Environment="TLS_KEY_FILE=/opt/kmip-server/certs/server.key"
+ExecStart=/opt/kmip-server/cmd/web-ui/web-ui
+Restart=always
+RestartSec=10
+
+# 보안 설정
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kmip-server/certs
+
+# 로깅
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kmip-web-ui
+
+[Install]
+WantedBy=multi-user.target
