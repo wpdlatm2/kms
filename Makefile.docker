@@ -1,0 +1,243 @@
+# Docker-based KMIP Cluster Management
+
+.PHONY: help docker-setup docker-build docker-up docker-down docker-logs docker-ps docker-clean
+
+# 기본 타겟
+.DEFAULT_GOAL := help
+
+# ===== Docker 기본 명령 =====
+
+docker-setup-single: ## Docker 환경 설정 (단일 클러스터)
+	@./scripts/docker-setup.sh single
+
+docker-setup-multi: ## Docker 환경 설정 (멀티 클러스터)
+	@./scripts/docker-setup.sh multi
+
+docker-build: ## Docker 이미지 빌드
+	@echo "Building Docker image..."
+	docker-compose build
+
+docker-build-multi: ## Docker 이미지 빌드 (멀티 클러스터)
+	@echo "Building Docker images for multi-cluster..."
+	docker-compose -f docker-compose.multi-cluster.yml build
+
+# ===== 단일 클러스터 명령 =====
+
+docker-up: ## 클러스터 시작 (단일)
+	@echo "Starting single cluster..."
+	docker-compose up -d
+	@echo ""
+	@echo "Waiting for cluster to be ready..."
+	@sleep 10
+	@make docker-status
+
+docker-down: ## 클러스터 중지 (단일)
+	@echo "Stopping single cluster..."
+	docker-compose down
+
+docker-restart: docker-down docker-up ## 클러스터 재시작 (단일)
+
+docker-logs: ## 로그 확인 (단일)
+	docker-compose logs -f
+
+docker-logs-node1: ## Node 1 로그만 확인
+	docker-compose logs -f kmip-node1
+
+docker-logs-node2: ## Node 2 로그만 확인
+	docker-compose logs -f kmip-node2
+
+docker-logs-node3: ## Node 3 로그만 확인
+	docker-compose logs -f kmip-node3
+
+docker-ps: ## 컨테이너 상태 확인
+	docker-compose ps
+
+docker-status: ## 클러스터 상태 확인 (단일)
+	@echo "=== Cluster Status ==="
+	@echo ""
+	@echo "Node 1:"
+	@curl -s http://localhost:9090/health | jq '.' || echo "Not responding"
+	@echo ""
+	@echo "Node 2:"
+	@curl -s http://localhost:9091/health | jq '.' || echo "Not responding"
+	@echo ""
+	@echo "Node 3:"
+	@curl -s http://localhost:9092/health | jq '.' || echo "Not responding"
+	@echo ""
+
+# ===== 멀티 클러스터 명령 =====
+
+docker-up-multi: ## 클러스터 시작 (멀티)
+	@echo "Starting multi-cluster..."
+	docker-compose -f docker-compose.multi-cluster.yml up -d
+	@echo ""
+	@echo "Waiting for clusters to be ready..."
+	@sleep 15
+	@make docker-status-multi
+
+docker-down-multi: ## 클러스터 중지 (멀티)
+	@echo "Stopping multi-cluster..."
+	docker-compose -f docker-compose.multi-cluster.yml down
+
+docker-restart-multi: docker-down-multi docker-up-multi ## 클러스터 재시작 (멀티)
+
+docker-logs-multi: ## 로그 확인 (멀티)
+	docker-compose -f docker-compose.multi-cluster.yml logs -f
+
+docker-logs-seoul: ## 서울 클러스터 로그
+	docker-compose -f docker-compose.multi-cluster.yml logs -f seoul-node1 seoul-node2 seoul-node3
+
+docker-logs-busan: ## 부산 클러스터 로그
+	docker-compose -f docker-compose.multi-cluster.yml logs -f busan-node1 busan-node2 busan-node3
+
+docker-ps-multi: ## 컨테이너 상태 확인 (멀티)
+	docker-compose -f docker-compose.multi-cluster.yml ps
+
+docker-status-multi: ## 클러스터 상태 확인 (멀티)
+	@echo "=== Seoul Cluster ==="
+	@echo "Node 1: $$(curl -s http://localhost:19090/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo "Node 2: $$(curl -s http://localhost:19091/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo "Node 3: $$(curl -s http://localhost:19092/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo ""
+	@echo "=== Busan Cluster ==="
+	@echo "Node 1: $$(curl -s http://localhost:29090/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo "Node 2: $$(curl -s http://localhost:29091/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo "Node 3: $$(curl -s http://localhost:29092/health | jq -r '.status' 2>/dev/null || echo 'Down')"
+	@echo ""
+
+docker-setup-replication: ## 클러스터 간 복제 설정
+	@./scripts/setup-cross-cluster-replication.sh
+
+# ===== 테스트 명령 =====
+
+docker-test: ## 클러스터 테스트 (단일)
+	@echo "Testing single cluster..."
+	@echo ""
+	@echo "Creating key on Node 1..."
+	@KEY_ID=$$(curl -s -X POST http://localhost:9090/api/v1/keys \
+		-H "Content-Type: application/json" \
+		-d '{"algorithm":"AES","length":256}' | jq -r '.key_id')
+	@echo "Key ID: $$KEY_ID"
+	@echo ""
+	@echo "Waiting for replication..."
+	@sleep 3
+	@echo ""
+	@echo "Checking Node 2..."
+	@curl -s http://localhost:9091/api/v1/keys/$$KEY_ID | jq '.'
+	@echo ""
+	@echo "Checking Node 3..."
+	@curl -s http://localhost:9092/api/v1/keys/$$KEY_ID | jq '.'
+
+docker-test-multi: ## 클러스터 간 복제 테스트
+	@echo "Testing cross-cluster replication..."
+	@echo ""
+	@echo "Creating key in Seoul..."
+	@KEY_ID=$$(curl -s -X POST http://localhost:19090/api/v1/keys \
+		-H "Content-Type: application/json" \
+		-d '{"algorithm":"AES","length":256}' | jq -r '.key_id')
+	@echo "Key ID: $$KEY_ID"
+	@echo ""
+	@echo "Waiting for cross-cluster replication..."
+	@sleep 5
+	@echo ""
+	@echo "Checking Busan cluster..."
+	@curl -s http://localhost:29090/api/v1/keys/$$KEY_ID | jq '.' || echo "Not replicated yet"
+
+# ===== 디버깅 명령 =====
+
+docker-shell-node1: ## Node 1 셸 접속
+	docker-compose exec kmip-node1 sh
+
+docker-shell-node2: ## Node 2 셸 접속
+	docker-compose exec kmip-node2 sh
+
+docker-shell-node3: ## Node 3 셸 접속
+	docker-compose exec kmip-node3 sh
+
+docker-inspect: ## 네트워크 및 볼륨 검사
+	@echo "=== Networks ==="
+	@docker network ls | grep kmip
+	@echo ""
+	@echo "=== Volumes ==="
+	@docker volume ls | grep kmip
+	@echo ""
+	@echo "=== Containers ==="
+	@docker ps -a | grep kmip
+
+docker-stats: ## 리소스 사용량 확인
+	docker stats --no-stream $$(docker ps --filter "name=kmip" -q)
+
+# ===== 데이터 관리 =====
+
+docker-backup: ## 데이터 백업
+	@echo "Backing up data..."
+	@mkdir -p backups
+	@tar -czf backups/kmip-backup-$$(date +%Y%m%d-%H%M%S).tar.gz volumes/
+	@echo "Backup complete: backups/kmip-backup-$$(date +%Y%m%d-%H%M%S).tar.gz"
+
+docker-restore: ## 데이터 복원 (BACKUP_FILE 지정)
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "Usage: make docker-restore BACKUP_FILE=backups/kmip-backup-xxx.tar.gz"; \
+		exit 1; \
+	fi
+	@echo "Restoring from $(BACKUP_FILE)..."
+	@docker-compose down
+	@rm -rf volumes/
+	@tar -xzf $(BACKUP_FILE)
+	@echo "Restore complete. Start cluster with: make docker-up"
+
+docker-clean-data: ## 데이터 디렉토리 정리
+	@echo "WARNING: This will delete all data!"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		rm -rf volumes/*/node*/data/*; \
+		echo "Data cleaned"; \
+	else \
+		echo "Cancelled"; \
+	fi
+
+docker-clean-logs: ## 로그 정리
+	@rm -rf volumes/*/node*/logs/*
+	@echo "Logs cleaned"
+
+# ===== 정리 명령 =====
+
+docker-clean: ## 컨테이너 및 네트워크 정리
+	@echo "Cleaning up Docker resources..."
+	docker-compose down -v
+	docker-compose -f docker-compose.multi-cluster.yml down -v 2>/dev/null || true
+	@echo "Cleaned"
+
+docker-prune: docker-clean ## 전체 정리 (이미지 포함)
+	@echo "Pruning Docker system..."
+	docker system prune -f
+	@echo "Pruned"
+
+docker-reset: ## 완전 초기화
+	@echo "WARNING: This will delete everything!"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		make docker-clean; \
+		rm -rf volumes/ config/ certs/; \
+		echo "Reset complete"; \
+	else \
+		echo "Cancelled"; \
+	fi
+
+# ===== 도움말 =====
+
+help: ## 도움말 표시
+	@echo "KMIP Docker Cluster Management"
+	@echo ""
+	@echo "Setup:"
+	@grep -E '^docker-setup.*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Single Cluster:"
+	@grep -E '^docker-(build|up|down|restart|logs|ps|status|test).*:.*##' $(MAKEFILE_LIST) | grep -v multi | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Multi Cluster:"
+	@grep -E '^docker-.*multi.*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'
+	@grep -E '^docker-setup-replication.*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Management:"
+	@grep -E '^docker-(backup|restore|clean|shell|inspect|stats).*:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*##"}; {printf "  make %-30s %s\n", $$1, $$2}'

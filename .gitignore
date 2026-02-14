@@ -1,0 +1,41 @@
+# Binaries
+kmip-server
+kmip-client
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Certificates and keys
+*.crt
+*.key
+*.csr
+*.pem
+*.srl
+
+# Raft data
+data/
+*.db
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/

@@ -1,0 +1,340 @@
+version: '3.8'
+
+# 멀티 클러스터 구성: 서울 클러스터 + 부산 클러스터
+# 클러스터 간 복제 (Cross-Cluster Replication) 데모
+
+services:
+  # ===== 서울 클러스터 (Primary) =====
+  
+  # 서울 Node 1
+  seoul-node1:
+    build: .
+    container_name: seoul-node1
+    hostname: seoul-node1
+    networks:
+      seoul-network:
+        ipv4_address: 172.21.0.11
+      cross-cluster:
+        ipv4_address: 172.30.0.11
+    ports:
+      - "15696:5696"   # KMIP
+      - "17000:7000"   # Raft
+      - "18080:8080"   # Management
+      - "19090:9090"   # REST API
+    volumes:
+      - ./config/seoul/node1:/app/config:ro
+      - ./volumes/seoul/node1/data:/app/data
+      - ./volumes/seoul/node1/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-seoul
+      - NODE_ID=seoul-node-1
+      - LOCATION=Seoul
+    command: >
+      -node-id seoul-node-1
+      -raft-addr 172.21.0.11:7000
+      -data-dir /app/data
+      -bootstrap
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=seoul"
+      - "role=leader"
+
+  # 서울 Node 2
+  seoul-node2:
+    build: .
+    container_name: seoul-node2
+    hostname: seoul-node2
+    networks:
+      seoul-network:
+        ipv4_address: 172.21.0.12
+      cross-cluster:
+        ipv4_address: 172.30.0.12
+    ports:
+      - "15697:5696"
+      - "17001:7000"
+      - "18081:8080"
+      - "19091:9090"
+    volumes:
+      - ./config/seoul/node2:/app/config:ro
+      - ./volumes/seoul/node2/data:/app/data
+      - ./volumes/seoul/node2/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-seoul
+      - NODE_ID=seoul-node-2
+      - LOCATION=Seoul
+    command: >
+      -node-id seoul-node-2
+      -raft-addr 172.21.0.12:7000
+      -data-dir /app/data
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    depends_on:
+      - seoul-node1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=seoul"
+      - "role=follower"
+
+  # 서울 Node 3
+  seoul-node3:
+    build: .
+    container_name: seoul-node3
+    hostname: seoul-node3
+    networks:
+      seoul-network:
+        ipv4_address: 172.21.0.13
+      cross-cluster:
+        ipv4_address: 172.30.0.13
+    ports:
+      - "15698:5696"
+      - "17002:7000"
+      - "18082:8080"
+      - "19092:9090"
+    volumes:
+      - ./config/seoul/node3:/app/config:ro
+      - ./volumes/seoul/node3/data:/app/data
+      - ./volumes/seoul/node3/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-seoul
+      - NODE_ID=seoul-node-3
+      - LOCATION=Seoul
+    command: >
+      -node-id seoul-node-3
+      -raft-addr 172.21.0.13:7000
+      -data-dir /app/data
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    depends_on:
+      - seoul-node1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=seoul"
+      - "role=follower"
+
+  # ===== 부산 클러스터 (Secondary/DR) =====
+  
+  # 부산 Node 1
+  busan-node1:
+    build: .
+    container_name: busan-node1
+    hostname: busan-node1
+    networks:
+      busan-network:
+        ipv4_address: 172.22.0.11
+      cross-cluster:
+        ipv4_address: 172.30.0.21
+    ports:
+      - "25696:5696"   # KMIP
+      - "27000:7000"   # Raft
+      - "28080:8080"   # Management
+      - "29090:9090"   # REST API
+    volumes:
+      - ./config/busan/node1:/app/config:ro
+      - ./volumes/busan/node1/data:/app/data
+      - ./volumes/busan/node1/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-busan
+      - NODE_ID=busan-node-1
+      - LOCATION=Busan
+    command: >
+      -node-id busan-node-1
+      -raft-addr 172.22.0.11:7000
+      -data-dir /app/data
+      -bootstrap
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=busan"
+      - "role=leader"
+
+  # 부산 Node 2
+  busan-node2:
+    build: .
+    container_name: busan-node2
+    hostname: busan-node2
+    networks:
+      busan-network:
+        ipv4_address: 172.22.0.12
+      cross-cluster:
+        ipv4_address: 172.30.0.22
+    ports:
+      - "25697:5696"
+      - "27001:7000"
+      - "28081:8080"
+      - "29091:9090"
+    volumes:
+      - ./config/busan/node2:/app/config:ro
+      - ./volumes/busan/node2/data:/app/data
+      - ./volumes/busan/node2/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-busan
+      - NODE_ID=busan-node-2
+      - LOCATION=Busan
+    command: >
+      -node-id busan-node-2
+      -raft-addr 172.22.0.12:7000
+      -data-dir /app/data
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    depends_on:
+      - busan-node1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=busan"
+      - "role=follower"
+
+  # 부산 Node 3
+  busan-node3:
+    build: .
+    container_name: busan-node3
+    hostname: busan-node3
+    networks:
+      busan-network:
+        ipv4_address: 172.22.0.13
+      cross-cluster:
+        ipv4_address: 172.30.0.23
+    ports:
+      - "25698:5696"
+      - "27002:7000"
+      - "28082:8080"
+      - "29092:9090"
+    volumes:
+      - ./config/busan/node3:/app/config:ro
+      - ./volumes/busan/node3/data:/app/data
+      - ./volumes/busan/node3/logs:/app/logs
+      - ./certs:/app/certs:ro
+    environment:
+      - CLUSTER_ID=cluster-busan
+      - NODE_ID=busan-node-3
+      - LOCATION=Busan
+    command: >
+      -node-id busan-node-3
+      -raft-addr 172.22.0.13:7000
+      -data-dir /app/data
+      -use-raft
+      -replication true
+      -replication-mode quorum
+      -replication-factor 3
+      -min-replicas 2
+      -enable-rest
+      -rest-addr :9090
+      -addr :5696
+      -http-addr :8080
+    depends_on:
+      - busan-node1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "cluster=busan"
+      - "role=follower"
+
+networks:
+  # 서울 클러스터 내부 네트워크
+  seoul-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+    labels:
+      - "location=seoul"
+  
+  # 부산 클러스터 내부 네트워크
+  busan-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+    labels:
+      - "location=busan"
+  
+  # 클러스터 간 복제 네트워크
+  cross-cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+    labels:
+      - "type=cross-cluster-replication"
+
+volumes:
+  # 서울 볼륨
+  seoul-node1-data:
+  seoul-node2-data:
+  seoul-node3-data:
+  
+  # 부산 볼륨
+  busan-node1-data:
+  busan-node2-data:
+  busan-node3-data:

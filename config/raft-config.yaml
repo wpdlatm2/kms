@@ -1,0 +1,158 @@
+# KMIP Raft 클러스터 설정 예제
+
+# 기본 노드 설정
+node:
+  id: "node-1"                    # 노드 고유 ID
+  bind_addr: "127.0.0.1:7000"     # Raft 통신 주소
+  data_dir: "./data/node-1"       # 데이터 저장 디렉토리
+  bootstrap: true                 # 첫 노드인 경우 true
+
+# 복제 설정
+replication:
+  enabled: true                   # 복제 활성화 (false면 로컬 모드)
+  factor: 3                       # 복제 팩터 (총 노드 수)
+  min_replicas: 2                 # 최소 복제본 수 (쿼럼용)
+  
+  # 복제 모드
+  # - sync: 모든 복제본 완료 대기 (가장 안전, 느림)
+  # - async: 리더만 완료 후 즉시 반환 (빠름, 데이터 손실 가능)
+  # - quorum: 과반수 완료 대기 (균형잡힘, 권장)
+  mode: "quorum"
+  
+  # 일관성 레벨
+  # - strong: 강한 일관성 (읽기도 쿼럼 필요)
+  # - eventual: 최종 일관성 (빠른 읽기)
+  consistency: "strong"
+  
+  # 타임아웃 설정 (밀리초)
+  timeout_ms: 5000               # 복제 타임아웃
+  retry_attempts: 3              # 재시도 횟수
+  retry_backoff_ms: 100          # 재시도 백오프
+
+# 성능 설정
+performance:
+  heartbeat_timeout: "1s"        # 하트비트 타임아웃
+  election_timeout: "1s"         # 선거 타임아웃
+  commit_timeout: "50ms"         # 커밋 타임아웃
+  snapshot_interval: "120s"      # 스냅샷 간격
+  snapshot_threshold: 8192       # 스냅샷 임계값 (로그 엔트리 수)
+  max_append_entries: 64         # 최대 Append Entries
+  trailing_logs: 10240           # 보관할 로그 수
+
+# 초기 피어 설정 (부트스트랩 노드만)
+initial_peers:
+  - id: "node-2"
+    address: "127.0.0.1:7001"
+  - id: "node-3"
+    address: "127.0.0.1:7002"
+
+---
+# 3노드 클러스터 설정 예제
+
+# Node 1 (리더)
+node_1:
+  node:
+    id: "node-1"
+    bind_addr: "127.0.0.1:7000"
+    data_dir: "./data/node-1"
+    bootstrap: true
+  replication:
+    enabled: true
+    factor: 3
+    min_replicas: 2
+    mode: "quorum"
+  initial_peers:
+    - id: "node-2"
+      address: "127.0.0.1:7001"
+    - id: "node-3"
+      address: "127.0.0.1:7002"
+
+# Node 2 (팔로워)
+node_2:
+  node:
+    id: "node-2"
+    bind_addr: "127.0.0.1:7001"
+    data_dir: "./data/node-2"
+    bootstrap: false
+  replication:
+    enabled: true
+    factor: 3
+    min_replicas: 2
+    mode: "quorum"
+
+# Node 3 (팔로워)
+node_3:
+  node:
+    id: "node-3"
+    bind_addr: "127.0.0.1:7002"
+    data_dir: "./data/node-3"
+    bootstrap: false
+  replication:
+    enabled: true
+    factor: 3
+    min_replicas: 2
+    mode: "quorum"
+
+---
+# 로컬 모드 (복제 비활성화)
+local_mode:
+  node:
+    id: "standalone"
+    bind_addr: "127.0.0.1:7000"
+    data_dir: "./data/standalone"
+    bootstrap: false
+  replication:
+    enabled: false              # 복제 비활성화
+
+---
+# 고가용성 5노드 클러스터
+ha_cluster:
+  replication:
+    enabled: true
+    factor: 5                    # 5개 노드
+    min_replicas: 3              # 최소 3개 필요
+    mode: "quorum"
+    consistency: "strong"
+  
+  nodes:
+    - id: "node-1"
+      address: "10.0.1.1:7000"
+    - id: "node-2"
+      address: "10.0.1.2:7000"
+    - id: "node-3"
+      address: "10.0.1.3:7000"
+    - id: "node-4"
+      address: "10.0.1.4:7000"
+    - id: "node-5"
+      address: "10.0.1.5:7000"
+
+---
+# 성능 최적화 설정 (비동기)
+performance_mode:
+  replication:
+    enabled: true
+    factor: 3
+    min_replicas: 1              # 최소 1개만 (리더)
+    mode: "async"                # 비동기 복제
+    consistency: "eventual"      # 최종 일관성
+    timeout_ms: 1000            # 짧은 타임아웃
+  
+  performance:
+    commit_timeout: "10ms"      # 빠른 커밋
+    snapshot_interval: "300s"   # 덜 빈번한 스냅샷
+
+---
+# 안전성 우선 설정 (동기)
+safety_mode:
+  replication:
+    enabled: true
+    factor: 5
+    min_replicas: 5              # 모든 노드 필요
+    mode: "sync"                 # 동기 복제
+    consistency: "strong"
+    timeout_ms: 10000           # 긴 타임아웃
+    retry_attempts: 5           # 많은 재시도
+  
+  performance:
+    commit_timeout: "100ms"
+    snapshot_interval: "60s"    # 자주 스냅샷
