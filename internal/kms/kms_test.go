@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func newSvc(t *testing.T) (*Service, string) {
+func newSvc(t testing.TB) (*Service, string) {
 	t.Helper()
 	dir := t.TempDir()
 	sl, err := LoadFileSealer(filepath.Join(dir, "master.key"))

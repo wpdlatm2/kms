@@ -114,7 +114,7 @@ func (b bag) length() int {
 
 func (b bag) usage() int32 {
 	if it := b.one("Cryptographic Usage Mask"); it != nil {
-		return int32(it.Num)
+		return int32(max(min(it.Num, 1<<31-1), -1<<31))
 	}
 	return 0
 }
@@ -217,7 +217,7 @@ func (s *Server) locate(p kms.Principal, v kmip.Version, pl *kmip.Item) (*kmip.I
 	if max > 0 && len(ids) > max {
 		ids = ids[:max]
 	}
-	out := kmip.Struct(kmip.TagResponsePayload, kmip.Int(kmip.TagLocatedItems, int32(len(ids))))
+	out := kmip.Struct(kmip.TagResponsePayload, kmip.Int(kmip.TagLocatedItems, i32(len(ids))))
 	for _, id := range ids {
 		out.Children = append(out.Children, kmip.Text(kmip.TagUniqueIdentifier, id))
 	}
@@ -244,7 +244,7 @@ func attrList(o kms.View, v kmip.Version) []namedAttr {
 		{"Object Group", kmip.Text(kmip.TagObjectGroup, o.Group)},
 	}
 	if o.Bits > 0 {
-		l = append(l, namedAttr{"Cryptographic Length", kmip.Int(kmip.TagCryptographicLength, int32(o.Bits))})
+		l = append(l, namedAttr{"Cryptographic Length", kmip.Int(kmip.TagCryptographicLength, i32(o.Bits))})
 	}
 	if o.Curve != 0 {
 		l = append(l, namedAttr{"Cryptographic Domain Parameters", kmip.Struct(kmip.TagCryptographicDomainParameters, kmip.Enum(kmip.TagRecommendedCurve, o.Curve))})
@@ -335,7 +335,7 @@ func (s *Server) get(p kms.Principal, pl *kmip.Item) (*kmip.Item, *opError) {
 		kmip.Struct(kmip.TagKeyValue, kmip.Bytes(kmip.TagKeyMaterial, append([]byte(nil), m.Bytes...))),
 		kmip.Enum(kmip.TagCryptographicAlgorithm, o.Alg))
 	if o.Bits > 0 {
-		kb.Children = append(kb.Children, kmip.Int(kmip.TagCryptographicLength, int32(o.Bits)))
+		kb.Children = append(kb.Children, kmip.Int(kmip.TagCryptographicLength, i32(o.Bits)))
 	}
 	holder := kmip.TagSymmetricKey
 	switch o.Kind {

@@ -114,13 +114,13 @@ func adminOnly(p Principal) *Error {
 func (s *Service) persist(restore func()) error {
 	if err := s.st.save(); err != nil {
 		restore()
-		return errf(ErrInternal, "could not persist: %v", err)
+		return persistErr(err)
 	}
 	return nil
 }
 
 func badIdent(x string) bool {
-	return x == "" || len(x) > 128 || x == "*" || strings.ContainsAny(x, "\r\n\t\x00")
+	return x == "" || len(x) > 128 || x == "*" || badText(x)
 }
 
 // Me describes the management rights of an administration identity.
@@ -241,7 +241,7 @@ func (s *Service) PutGroup(p Principal, r GroupReq, create bool) (err error) {
 	if !nameRe.MatchString(r.Name) {
 		return errf(ErrInvalid, "name: 1-64 letters, digits, dot, underscore or hyphen")
 	}
-	if len(r.Description) > 256 {
+	if len(r.Description) > 256 || badText(r.Description) {
 		return errf(ErrInvalid, "description is too long")
 	}
 	s.st.mu.Lock()
@@ -389,7 +389,7 @@ func (s *Service) PutTemplate(p Principal, name, description string, ops []strin
 	if !nameRe.MatchString(name) {
 		return errf(ErrInvalid, "template name: 1-64 letters, digits, dot, underscore or hyphen")
 	}
-	if len(description) > 256 {
+	if len(description) > 256 || badText(description) {
 		return errf(ErrInvalid, "description is too long")
 	}
 	if len(ops) == 0 {

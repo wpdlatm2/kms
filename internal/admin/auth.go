@@ -43,7 +43,7 @@ type Users struct {
 
 func LoadUsers(path string) (*Users, error) {
 	u := &Users{path: path}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- operator-configured path
 	if errors.Is(err, os.ErrNotExist) {
 		return u, nil
 	}

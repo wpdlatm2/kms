@@ -23,6 +23,16 @@ import (
 
 const maxMessage = 1 << 20
 
+// maxBatch bounds the operations of one request message.
+const maxBatch = 64
+
+// MessageTimeout is how long the rest of a message may take once its header arrived (a client that stalls
+// half-way is cut off); IdleTimeout is how long a quiet connection is kept.
+var (
+	MessageTimeout = 30 * time.Second
+	IdleTimeout    = 5 * time.Minute
+)
+
 // supportedVersions are the protocol versions the server answers, newest first.
 var supportedVersions = kmip.Supported
 
@@ -86,7 +96,7 @@ func (s *Server) Addr() net.Addr {
 func (s *Server) Close() {
 	s.mu.Lock()
 	if s.ln != nil {
-		s.ln.Close()
+		_ = s.ln.Close()
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -100,6 +110,11 @@ func (s *Server) logf(format string, a ...any) {
 
 func (s *Server) conn(c net.Conn) {
 	defer c.Close()
+	defer func() {
+		if r := recover(); r != nil { // one misbehaving connection must not stop the key server
+			s.logf("kmip: recovered from a panic while serving %s: %v", c.RemoteAddr(), r)
+		}
+	}()
 	tc, ok := c.(*tls.Conn)
 	if !ok {
 		return
@@ -118,8 +133,8 @@ func (s *Server) conn(c net.Conn) {
 	p := kms.ClientPrincipal(st.PeerCertificates[0].Subject.CommonName)
 	remote := c.RemoteAddr().String()
 	for {
-		_ = c.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		raw, err := readMessage(c)
+		_ = c.SetReadDeadline(time.Now().Add(IdleTimeout))
+		raw, err := readMessage(c, func() { _ = c.SetReadDeadline(time.Now().Add(MessageTimeout)) })
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				s.logf("kmip: %s: %v", p.Name, err)
@@ -133,10 +148,15 @@ func (s *Server) conn(c net.Conn) {
 	}
 }
 
-func readMessage(r io.Reader) ([]byte, error) {
+// readMessage reads one TTLV message. onHeader runs once the 8-byte header arrived: the rest must follow
+// promptly (a client that stalls half-way, a "slow loris", cannot hold the connection for the idle time).
+func readMessage(r io.Reader, onHeader func()) ([]byte, error) {
 	var h [8]byte
 	if _, err := io.ReadFull(r, h[:]); err != nil {
 		return nil, err
+	}
+	if onHeader != nil {
+		onHeader()
 	}
 	if h[3] != byte(kmip.TypeStructure) {
 		return nil, errors.New("request is not a TTLV structure")
@@ -174,9 +194,9 @@ func failItem(op uint32, batchID string, reason uint32, msg string) *kmip.Item {
 
 func respond(v kmip.Version, items []*kmip.Item) *kmip.Item {
 	hdr := kmip.Struct(kmip.TagResponseHeader,
-		kmip.Struct(kmip.TagProtocolVersion, kmip.Int(kmip.TagProtocolVersionMajor, int32(v.Major)), kmip.Int(kmip.TagProtocolVersionMinor, int32(v.Minor))),
+		kmip.Struct(kmip.TagProtocolVersion, kmip.Int(kmip.TagProtocolVersionMajor, i32(v.Major)), kmip.Int(kmip.TagProtocolVersionMinor, i32(v.Minor))),
 		kmip.DateTime(kmip.TagTimeStamp, time.Now()),
-		kmip.Int(kmip.TagBatchCount, int32(len(items))))
+		kmip.Int(kmip.TagBatchCount, i32(len(items))))
 	return kmip.Struct(kmip.TagResponseMessage, append([]*kmip.Item{hdr}, items...)...)
 }
 
@@ -200,6 +220,9 @@ func (s *Server) handle(p kms.Principal, remote string, raw []byte) []byte {
 	}
 	var items []*kmip.Item
 	batch := req.All(kmip.TagBatchItem)
+	if len(batch) > maxBatch {
+		return failMessage(ver, kmip.ReasonInvalidMessage, fmt.Sprintf("a request may carry at most %d operations", maxBatch))
+	}
 	for _, bi := range batch {
 		opItem := bi.Child(kmip.TagOperation)
 		if opItem == nil {
@@ -287,6 +310,8 @@ func fromErr(err error) *opError {
 			return &opError{kmip.ReasonInvalidField, ke.Msg}
 		case kms.ErrUnsupported:
 			return &opError{kmip.ReasonOperationNotSupported, ke.Msg}
+		case kms.ErrUnavailable:
+			return &opError{kmip.ReasonGeneralFailure, ke.Msg}
 		}
 	}
 	return &opError{kmip.ReasonGeneralFailure, "internal error"}
@@ -333,7 +358,7 @@ func (s *Server) discover(pl *kmip.Item) *kmip.Item {
 	for _, sv := range supportedVersions {
 		if len(asked) == 0 || asked[sv] {
 			out.Children = append(out.Children, kmip.Struct(kmip.TagProtocolVersion,
-				kmip.Int(kmip.TagProtocolVersionMajor, int32(sv.Major)), kmip.Int(kmip.TagProtocolVersionMinor, int32(sv.Minor))))
+				kmip.Int(kmip.TagProtocolVersionMajor, i32(sv.Major)), kmip.Int(kmip.TagProtocolVersionMinor, i32(sv.Minor))))
 		}
 	}
 	return out
@@ -352,4 +377,15 @@ func (s *Server) query() *kmip.Item {
 	}
 	out.Children = append(out.Children, kmip.Text(kmip.TagVendorIdentification, "pqc-kms"))
 	return out
+}
+
+// i32 converts to the 32-bit integer of the KMIP encoding, saturating instead of wrapping.
+func i32(n int) int32 {
+	if n > 1<<31-1 {
+		return 1<<31 - 1
+	}
+	if n < -1<<31 {
+		return -1 << 31
+	}
+	return int32(n)
 }

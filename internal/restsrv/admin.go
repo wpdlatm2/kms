@@ -140,6 +140,10 @@ func NewAdmin(a *Admin) *Admin {
 		writeJSON(w, 200, keyList(a.Svc, p, a.Svc.List(p, filterFrom(r))))
 	}))
 	a.mux.HandleFunc("GET /admin/v1/keys/{id}", h(func(w http.ResponseWriter, r *http.Request, p kms.Principal) {
+		if !validID(r.PathValue("id")) {
+			failWith(w, http.StatusNotFound, "not_found", "no such object")
+			return
+		}
 		v, err := a.Svc.Attributes(p, r.PathValue("id"))
 		if err != nil {
 			fail(w, err)
@@ -167,6 +171,10 @@ func NewAdmin(a *Admin) *Admin {
 		writeJSON(w, 201, keyList(a.Svc, p, vs))
 	}))
 	a.mux.HandleFunc("POST /admin/v1/keys/{id}/{action}", h(func(w http.ResponseWriter, r *http.Request, p kms.Principal) {
+		if !validID(r.PathValue("id")) {
+			failWith(w, http.StatusNotFound, "not_found", "no such object")
+			return
+		}
 		out, err := doAction(a.Svc, p, r.PathValue("id"), r.PathValue("action"))
 		if err != nil {
 			fail(w, err)

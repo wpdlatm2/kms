@@ -115,7 +115,7 @@ func newBackend(base, caFile, certFile, keyFile, serverName string) (*admin.Back
 	}
 	pool := x509.NewCertPool()
 	if caFile != "" {
-		ca, err := os.ReadFile(caFile)
+		ca, err := os.ReadFile(caFile) // #nosec G304 -- operator-configured path
 		if err != nil {
 			return nil, err
 		}

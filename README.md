@@ -74,11 +74,15 @@ ssh server 'cd /docker/pqc-kms && bash setup.sh --web-san 192.168.0.111 && docke
 독립 구현체 확인: **PyKMIP 클라이언트**로 KMIP 1.0·1.2·1.4 전 흐름(이 과정에서 Create 응답의 Object Type 누락을 발견·수정).
 `deploy/itest-localhsm.sh`(TPM 호스트에서 root): 관리 API·상위그룹 매핑·localhsm 동기화·회전·템플릿 편집·침해·REST·로그 분리를 111 서버에서 end-to-end로 검증(0 failure).
 
+### GS 인증 기준 대응 시험
+
+입력값 검증(UTF-8·제어문자·크기·타입·경로), 오류·정보 노출, 세션·CSRF·OTP, 손상 DB, 동시성(레이스 검출기), 퍼징(KMIP 1,685만 회 등), 취약점·정적 분석(`govulncheck`, `gosec`)을 자체 시험한 결과와 시험 중 찾아 고친 결함은 [`docs/GS_TEST_REPORT.md`](docs/GS_TEST_REPORT.md)에 있다(공식 인증 시험은 아님).
+
 ## 알아둘 점
 
 - 생성 가능한 키는 위 목록이다(Covercrypt, FPE 등 Eviden/Cosmian 전용 기능은 없음). KMIP 3.0은 사양 기준 구현이며 3.0 서버/클라이언트와는 확인하지 못했다.
 - 폐기된 키는 값이 지워진 **기록**으로 남으므로, 기록만 남은 서비스는 삭제할 수 없다.
 - DB 파일을 이전 시점으로 되돌리는 공격(롤백)은 막지 못한다(변조는 막음). 백업은 `kms.db`와 TPM 키 상태가 함께 필요하다(TPM 초기화 시 복호화 불가). 운영에서는 localhsm 복구키 등록을 권장한다.
-- 단일 노드다. 고가용성(Raft)과 백업·복제는 기존 `wpdlatm2/kms` 저장소에 구현이 있어 이식 후보다.
+- 단일 노드다. 복제 훅(순번·리더 아님 오류)까지 준비했고 Raft 노드 구현은 남아 있다. 기존 구현은 `legacy` 브랜치에 있다.
 - 사내 CA 키(`pki/ca.key`)가 서버에 있다. 운영 수준에서는 별도 보관을 권장한다.
 - 콘솔 코드와 KMIP 클라이언트는 localhsm 저장소의 `kmip` 패키지를 쓴다(`go.mod`의 `replace`는 개발용; localhsm 푸시 후 제거).

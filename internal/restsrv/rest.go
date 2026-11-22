@@ -86,6 +86,10 @@ func (c *Client) list(w http.ResponseWriter, r *http.Request, p kms.Principal) {
 }
 
 func (c *Client) get(w http.ResponseWriter, r *http.Request, p kms.Principal) {
+	if !validID(r.PathValue("id")) {
+		failWith(w, http.StatusNotFound, "not_found", "no such object")
+		return
+	}
 	v, err := c.Svc.Attributes(p, r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
@@ -96,6 +100,10 @@ func (c *Client) get(w http.ResponseWriter, r *http.Request, p kms.Principal) {
 
 // value releases the key value: GET /v1/keys/{id}/value?encoding=base64|hex|pem
 func (c *Client) value(w http.ResponseWriter, r *http.Request, p kms.Principal) {
+	if !validID(r.PathValue("id")) {
+		failWith(w, http.StatusNotFound, "not_found", "no such object")
+		return
+	}
 	m, err := c.Svc.GetMaterial(p, r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
@@ -157,6 +165,10 @@ func doAction(s *kms.Service, p kms.Principal, id, action string) (ActionRespons
 }
 
 func (c *Client) act(w http.ResponseWriter, r *http.Request, p kms.Principal) {
+	if !validID(r.PathValue("id")) {
+		failWith(w, http.StatusNotFound, "not_found", "no such object")
+		return
+	}
 	out, err := doAction(c.Svc, p, r.PathValue("id"), r.PathValue("action"))
 	if err != nil {
 		fail(w, err)

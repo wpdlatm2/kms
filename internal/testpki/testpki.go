@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,6 +23,7 @@ type PKI struct {
 	Pool   *x509.CertPool
 	CAPEM  []byte
 	Server tls.Certificate
+	mu     sync.Mutex
 	serial int64
 }
 
@@ -42,9 +44,12 @@ func New(t testing.TB) *PKI {
 }
 
 func (p *PKI) leaf(cn string, eku x509.ExtKeyUsage) tls.Certificate {
+	p.mu.Lock()
 	p.serial++
+	serial := p.serial
+	p.mu.Unlock()
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	tpl := &x509.Certificate{SerialNumber: big.NewInt(p.serial), Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-time.Hour),
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-time.Hour),
 		NotAfter: time.Now().Add(24 * time.Hour), ExtKeyUsage: []x509.ExtKeyUsage{eku}, KeyUsage: x509.KeyUsageDigitalSignature,
 		DNSNames: []string{"localhost", "kms"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, p.ca, &k.PublicKey, p.caKey)

@@ -220,7 +220,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.thr.reset(key)
 	tok, ss := s.sess.create(u.Name, enrollOnly)
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: int(s.sess.ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, // #nosec G124 -- Secure follows the TLS setting: plain HTTP is only allowed on loopback
+		Path: "/", HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: int(s.sess.ttl.Seconds())})
 	s.note(u.Name, "login", "ok", ip)
 	writeJSON(w, 200, map[string]any{"user": ss.User, "csrf": ss.CSRF, "enrollRequired": enrollOnly})
 }
@@ -231,18 +232,20 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, ss *session) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		s.sess.drop(c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, // #nosec G124 -- see the login cookie
+		Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	s.note(ss.User, "logout", "ok", clientIP(r))
 	writeJSON(w, 200, map[string]string{"ok": "bye"})
 }
 
 // call performs a backend request on behalf of a user.
 func (b *Backend) call(method, path, rawQuery, user, contentType string, body io.Reader) (int, http.Header, []byte, error) {
-	u := b.Base + "/admin/v1/" + path
+	// the path comes from the browser: escape it so that %3F or %23 cannot add a query or a fragment
+	u := b.Base + "/admin/v1/" + (&url.URL{Path: path}).EscapedPath()
 	if rawQuery != "" {
 		u += "?" + rawQuery
 	}
-	req, err := http.NewRequest(method, u, body)
+	req, err := http.NewRequest(method, u, body) // #nosec G704 -- the host is the configured backend; only an allow-listed, escaped path is appended
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -250,7 +253,7 @@ func (b *Backend) call(method, path, rawQuery, user, contentType string, body io
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("X-Acting-User", user)
-	resp, err := b.Client.Do(req)
+	resp, err := b.Client.Do(req) // #nosec G704 -- see above
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -306,7 +309,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, ss *session) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-	code, hdr, raw, err := s.Backend.call(r.Method, path, r.URL.RawQuery, ss.User, r.Header.Get("Content-Type"), r.Body)
+	code, _, raw, err := s.Backend.call(r.Method, path, r.URL.RawQuery, ss.User, r.Header.Get("Content-Type"), r.Body)
 	if err != nil {
 		var mb *http.MaxBytesError
 		if errors.As(err, &mb) {
@@ -317,11 +320,10 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, ss *session) {
 		fail(w, http.StatusBadGateway, "the key management server is not reachable: "+err.Error())
 		return
 	}
-	if ct := hdr.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
+	// the backend answers JSON only: do not pass its content type on, state it
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
-	_, _ = w.Write(raw)
+	_, _ = w.Write(raw) // #nosec G705 -- JSON from the backend with a fixed content type and nosniff
 }
 
 // ListenAndServe starts the HTTP(S) server. Without TLS it refuses non-loopback addresses.

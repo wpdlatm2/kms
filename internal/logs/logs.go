@@ -41,7 +41,7 @@ func Open(path, name string) (*Log, error) {
 	if path == "" {
 		return l, nil
 	}
-	if f, err := os.Open(path); err == nil {
+	if f, err := os.Open(path); err == nil { // #nosec G304 -- operator-configured path
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 1<<20), 1<<20)
 		for sc.Scan() {
@@ -50,9 +50,9 @@ func Open(path, name string) (*Log, error) {
 				l.push(e)
 			}
 		}
-		f.Close()
+		_ = f.Close()
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- operator-configured path
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (l *Log) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.f != nil {
-		l.f.Close()
+		_ = l.f.Close()
 		l.f = nil
 	}
 }

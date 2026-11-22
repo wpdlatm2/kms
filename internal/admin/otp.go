@@ -3,7 +3,7 @@ package admin
 import (
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // RFC 6238 default; every authenticator app supports SHA-1
+	"crypto/sha1" // #nosec G505 -- HMAC-SHA1 is the RFC 6238 default that every authenticator app supports; HMAC does not need collision resistance
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"

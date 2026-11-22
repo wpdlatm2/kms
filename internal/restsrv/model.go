@@ -1,6 +1,7 @@
 package restsrv
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wpdlatm2/kms/internal/kms"
 )
@@ -198,6 +200,12 @@ func fail(w http.ResponseWriter, err error) {
 			failWith(w, http.StatusBadRequest, "invalid_request", ke.Msg)
 		case kms.ErrUnsupported:
 			failWith(w, http.StatusNotImplemented, "unsupported", ke.Msg)
+		case kms.ErrUnavailable:
+			if ke.Leader != "" {
+				w.Header().Set("X-KMS-Leader", ke.Leader)
+			}
+			w.Header().Set("Retry-After", "1")
+			failWith(w, http.StatusServiceUnavailable, "not_leader", ke.Msg)
 		default:
 			failWith(w, http.StatusInternalServerError, "internal", "internal error")
 		}
@@ -207,13 +215,60 @@ func fail(w http.ResponseWriter, err error) {
 }
 
 func decode(r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(nil, r.Body, 1<<16)
-	dec := json.NewDecoder(r.Body)
+	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 1<<16))
+	if err != nil {
+		return errors.New("invalid request body: too large or unreadable")
+	}
+	// the JSON decoder would silently replace invalid UTF-8 by U+FFFD: refuse it instead of storing altered text
+	if !utf8.Valid(raw) {
+		return errors.New("invalid request body: not valid UTF-8")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		return err
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil // an empty body is a request without fields
+		}
+		return errors.New("invalid JSON request body: " + shortErr(err))
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) { // nothing may follow the JSON value
+		return errors.New("invalid JSON request body: unexpected data after the JSON value")
 	}
 	return nil
+}
+
+// shortErr turns a parser error into a short message that names the problem, not the parser.
+func shortErr(err error) string {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syn):
+		return "malformed JSON"
+	case errors.As(err, &typ):
+		if typ.Field != "" {
+			return "field " + typ.Field + " has the wrong type"
+		}
+		return "a value has the wrong type"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "malformed JSON"
+	}
+	if msg := err.Error(); strings.HasPrefix(msg, "json: unknown field ") {
+		return strings.TrimPrefix(msg, "json: ")
+	}
+	return "the request does not match the expected structure"
+}
+
+// validID accepts only what an identifier can look like (a UUID), so odd path segments never reach the store.
+func validID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func peerCN(r *http.Request) string {

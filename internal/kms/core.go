@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // State is the KMIP lifecycle state (values as in the KMIP specification).
@@ -197,17 +200,21 @@ const (
 	ErrUnsupported
 	ErrInternal
 	ErrConflict
+	ErrUnavailable // this node cannot take the write (not the cluster leader)
 )
 
 // Error is returned by every Service method.
 type Error struct {
-	Code ErrCode
-	Msg  string
+	Code   ErrCode
+	Msg    string
+	Leader string // set with ErrUnavailable: where writes should go
 }
 
 func (e *Error) Error() string { return e.Msg }
 
-func errf(c ErrCode, format string, a ...any) *Error { return &Error{c, fmt.Sprintf(format, a...)} }
+func errf(c ErrCode, format string, a ...any) *Error {
+	return &Error{Code: c, Msg: fmt.Sprintf(format, a...)}
+}
 
 // Plane distinguishes the two ways the service is reached.
 type Plane string
@@ -309,21 +316,44 @@ type CreateReq struct {
 	Activate bool
 }
 
+// maxNames bounds the names one key can carry (a request with thousands of names is an attack, not a key).
+const maxNames = 16
+
 func cleanNames(in []string) ([]string, *Error) {
+	if len(in) > 4*maxNames {
+		return nil, errf(ErrInvalid, "too many names")
+	}
 	var out []string
 	for _, n := range in {
 		n = strings.TrimSpace(n)
 		if n == "" {
 			continue
 		}
-		if len(n) > 128 || strings.ContainsAny(n, "\r\n\t\x00") {
+		if len(n) > 128 || badText(n) {
 			return nil, errf(ErrInvalid, "invalid key name")
 		}
 		if !slices.Contains(out, n) {
 			out = append(out, n)
 		}
 	}
+	if len(out) > maxNames {
+		return nil, errf(ErrInvalid, "a key can have at most %d names", maxNames)
+	}
 	return out, nil
+}
+
+// badText reports text that is not valid UTF-8 or contains control characters (NUL, CR, LF, TAB, DEL, the
+// Unicode line/paragraph separators and the byte order mark): such text would break logs, headers and files.
+func badText(s string) bool {
+	if !utf8.ValidString(s) {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\ufeff' {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultGroup finds the single group a client may create keys in (bound to ALL counts as "no single group").
@@ -426,7 +456,7 @@ func (s *Service) Create(p Principal, r CreateReq) (out []View, err error) {
 		for _, o := range objs {
 			delete(s.st.objs, o.ID)
 		}
-		return nil, errf(ErrInternal, "could not persist: %v", serr)
+		return nil, persistErr(serr)
 	}
 	for _, o := range objs {
 		out = append(out, view(o))
@@ -581,7 +611,7 @@ func (s *Service) transition(p Principal, id, op, right string, apply func(o *Ob
 	o.Changed = t
 	if serr := s.st.save(); serr != nil {
 		*o = old
-		return View{}, errf(ErrInternal, "could not persist: %v", serr)
+		return View{}, persistErr(serr)
 	}
 	return view(o), nil
 }
@@ -680,7 +710,7 @@ func (s *Service) ReKey(p Principal, id string) (nv View, err error) {
 	if serr := s.st.save(); serr != nil {
 		*o = old
 		delete(s.st.objs, n.ID)
-		return View{}, errf(ErrInternal, "could not persist: %v", serr)
+		return View{}, persistErr(serr)
 	}
 	return view(&n), nil
 }
@@ -712,7 +742,7 @@ func (s *Service) SetName(p Principal, id, name string, add bool) (err error) {
 	o.Changed = now()
 	if serr := s.st.save(); serr != nil {
 		o.Names = old
-		return errf(ErrInternal, "could not persist: %v", serr)
+		return persistErr(serr)
 	}
 	return nil
 }
@@ -786,4 +816,13 @@ func (s *Service) ParentOf(service string) string {
 	s.st.mu.RLock()
 	defer s.st.mu.RUnlock()
 	return s.parentOf(service)
+}
+
+// persistErr maps a failed save to the error code the front ends report. A follower answers with the leader.
+func persistErr(err error) *Error {
+	var nl *NotLeaderError
+	if errors.As(err, &nl) {
+		return &Error{Code: ErrUnavailable, Msg: nl.Error(), Leader: nl.Leader}
+	}
+	return errf(ErrInternal, "could not persist: %v", err)
 }
