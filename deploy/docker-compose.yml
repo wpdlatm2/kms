@@ -1,0 +1,82 @@
+# pqc-kms: key management backend (KMIP + client REST + administration API) and the web console.
+# Prepare with deploy/setup.sh (PKI, first console user, data folders, .env), then:
+#   docker compose build && docker compose up -d
+name: pqc-kms
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  kms:
+    <<: *hardening
+    build: .
+    image: pqc-kms:local
+    entrypoint: ["/kmsd"]
+    command:
+      - -data=/data
+      # the database master key lives in a localhsm keystore whose master key is bound to the host TPM
+      - -master-hsm=/data/master.hsm.json
+      - -master-tpm-name=pqc-kms
+      - -tls-cert=/pki/kms.crt
+      - -tls-key=/pki/kms.key
+      - -client-ca=/pki/ca.crt
+      - -kmip-listen=0.0.0.0:5696
+      - -rest-listen=0.0.0.0:9998
+      - -admin-listen=0.0.0.0:9999
+      # identities that are global administrators (bootstrap); everything else is delegated in the console
+      - -root-admin=admin
+      # the console may act for the people it has logged in
+      - -trusted-proxy=kms-console
+    user: "${PQC_UID:-1000}:${PQC_GID:-1000}"
+    group_add: ["${TSS_GID:-985}"]
+    devices: ["/dev/tpmrm0:/dev/tpmrm0"]
+    volumes:
+      - ./pki/ca.crt:/pki/ca.crt:ro
+      - ./pki/kms.crt:/pki/kms.crt:ro
+      - ./pki/kms.key:/pki/kms.key:ro
+      - ./data:/data
+    ports:
+      # all three ports are published on loopback only; open a port to other hosts deliberately
+      # (client plane: KMIP 5696 and REST 9998; control plane: administration API 9999)
+      - "127.0.0.1:5696:5696"
+      - "127.0.0.1:9998:9998"
+      - "127.0.0.1:9999:9999"
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512m }
+
+  console:
+    <<: *hardening
+    image: pqc-kms:local
+    entrypoint: ["/kmsadmin"]
+    user: "${PQC_UID:-1000}:${PQC_GID:-1000}"
+    depends_on: [kms]
+    command:
+      - -users=/console/users.json
+      - -log=/console/console.log.jsonl
+      - -listen=0.0.0.0:8443
+      - -tls-cert=/pki/console.crt
+      - -tls-key=/pki/console.key
+      - -backend=https://kms:9999
+      - -backend-ca=/pki/ca.crt
+      - -backend-cert=/pki/console-client.crt
+      - -backend-key=/pki/console-client.key
+      - -backend-server-name=kms
+      - -otp=${PQC_OTP:-required}
+      - -otp-issuer=pqc-kms
+      - serve
+    volumes:
+      - ./pki/ca.crt:/pki/ca.crt:ro
+      - ./pki/console.crt:/pki/console.crt:ro
+      - ./pki/console.key:/pki/console.key:ro
+      - ./pki/console-client.crt:/pki/console-client.crt:ro
+      - ./pki/console-client.key:/pki/console-client.key:ro
+      - ./console:/console
+    ports:
+      - "${PQC_CONSOLE_BIND:-0.0.0.0}:8443:8443"
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128m }

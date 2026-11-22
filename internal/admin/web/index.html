@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KMS 관리 콘솔</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div id="login" class="center hidden">
+  <form id="loginForm" class="card login">
+    <h1>KMS 관리 콘솔</h1>
+    <p class="muted">키 라이프사이클 · 권한 관리</p>
+    <label>사용자<input name="user" autocomplete="username" required autofocus></label>
+    <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+    <label id="otpRow" class="hidden">인증 코드 (OTP 앱의 6자리, 또는 복구 코드)<input name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="16" placeholder="123456"></label>
+    <p id="loginErr" class="err" role="alert"></p>
+    <button class="primary" type="submit">로그인</button>
+  </form>
+</div>
+
+<!-- OTP 최초 등록 -->
+<div id="enroll" class="center hidden">
+  <div class="card enroll">
+    <h1>2단계 인증(OTP) 설정</h1>
+    <div id="enrollStep1">
+      <p class="muted">비밀번호에 더해 휴대폰의 인증 앱으로 만든 6자리 코드를 입력하게 됩니다. 아래 무료 앱 중 하나를 설치하세요 (Android·iOS 공통 표준 TOTP).</p>
+      <ul class="plain small">
+        <li><b>Google Authenticator</b> — Android / iOS</li>
+        <li><b>Microsoft Authenticator</b> — Android / iOS</li>
+        <li><b>2FAS</b> — Android / iOS (오픈소스)</li>
+        <li><b>Aegis</b>(Android, 오픈소스) · <b>FreeOTP</b>(Android / iOS)</li>
+      </ul>
+      <div class="qrbox"><img id="qrImg" alt="OTP 등록 QR 코드" width="220" height="220"></div>
+      <p class="small muted">앱에서 <b>QR 코드 스캔</b>을 선택하세요. 스캔이 안 되면 앱의 “설정 키 입력”에 아래 키를 넣으세요 (시간 기반, 6자리, 30초).</p>
+      <p><code id="otpSecret" class="mono secret"></code></p>
+      <form id="enrollForm" class="inline">
+        <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="앱에 표시된 6자리" required>
+        <button class="primary" type="submit">확인</button>
+      </form>
+      <p id="enrollErr" class="err" role="alert"></p>
+      <div class="actions"><button id="enrollLogout" class="ghost">취소하고 로그아웃</button></div>
+    </div>
+    <div id="enrollStep2" class="hidden">
+      <p><b>설정이 완료되었습니다.</b> 아래 <b>복구 코드</b>를 안전한 곳에 보관하세요. 휴대폰을 잃어버렸을 때 코드마다 한 번씩 OTP 대신 사용할 수 있고, <u>이 화면에서만 표시됩니다</u>.</p>
+      <pre id="recoveryCodes" class="recovery"></pre>
+      <div class="actions wrap"><button id="copyCodes" class="ghost" type="button">복사</button><button id="saveCodes" class="ghost" type="button">텍스트 파일로 저장</button></div>
+      <label class="check"><input type="checkbox" id="savedCodes"> 복구 코드를 안전하게 보관했습니다</label>
+      <div class="actions"><button id="enrollDone" class="primary" disabled>계속</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">KMS 관리 콘솔 <span id="kmsInfo" class="muted"></span></div>
+    <nav id="tabs">
+      <button data-tab="keys" class="tab active">키</button>
+      <button data-tab="groups" class="tab">서비스·그룹</button>
+      <button data-tab="templates" class="tab">권한 템플릿</button>
+      <button data-tab="clients" class="tab">클라이언트 매핑</button>
+      <button data-tab="managers" class="tab">관리자</button>
+      <button data-tab="logs" class="tab">로그</button>
+      <button data-tab="lifecycle" class="tab">라이프사이클</button>
+    </nav>
+    <div class="who"><span id="whoami"></span><button id="logout" class="ghost">로그아웃</button></div>
+  </header>
+
+  <main>
+    <!-- 키 -->
+    <section id="tab-keys">
+      <div id="cards" class="cards"></div>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="이름·ID 검색">
+        <select id="groupFilter"><option value="">모든 서비스</option></select>
+        <select id="stateFilter"><option value="">모든 상태</option></select>
+        <span class="spacer"></span>
+        <button id="refresh" class="ghost">새로고침</button>
+        <button id="newKey" class="primary">+ 새 키</button>
+      </div>
+      <div class="tablewrap">
+        <table id="keys">
+          <thead><tr><th>이름</th><th>서비스</th><th>종류</th><th>알고리즘</th><th>상태</th><th>생성</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p id="empty" class="muted center-text hidden">표시할 키가 없습니다.</p>
+      </div>
+    </section>
+
+    <!-- 서비스·그룹 -->
+    <section id="tab-groups" class="hidden">
+      <div class="toolbar">
+        <p class="muted grow">키는 하나의 <b>서비스</b>(권한그룹)에 속합니다. 여러 서비스를 <b>상위그룹</b>으로 묶어 권한과 관리 권한을 한 번에 줄 수 있고, <b>ALL</b>은 모든 서비스에 적용됩니다.</p>
+        <button id="newSuper" class="ghost">+ 상위그룹</button>
+        <button id="newService" class="primary">+ 서비스</button>
+      </div>
+      <div id="groupTree"></div>
+    </section>
+
+    <!-- 권한 템플릿 -->
+    <section id="tab-templates" class="hidden">
+      <div class="toolbar">
+        <p class="muted grow">클라이언트에 부여하는 권한 묶음입니다. <b>owner</b>(생성·조회·수정·삭제)와 <b>guest</b>(조회만)가 기본 제공되며, 오퍼레이션을 골라 새로 만들거나 수정할 수 있습니다.</p>
+        <button id="newTemplate" class="primary">+ 새 템플릿</button>
+      </div>
+      <div id="templateList" class="grid"></div>
+    </section>
+
+    <!-- 클라이언트 매핑 -->
+    <section id="tab-clients" class="hidden">
+      <form id="bindForm" class="card inline">
+        <h3>클라이언트를 그룹에 매핑</h3>
+        <input name="client" placeholder="클라이언트 인증서 CN (예: hsm-node-a)" maxlength="128" required>
+        <select name="group" required></select>
+        <select name="template" required></select>
+        <button class="primary" type="submit">매핑</button>
+      </form>
+      <p id="bindErr" class="err"></p>
+      <div class="tablewrap">
+        <table id="bindings"><thead><tr><th>클라이언트</th><th>그룹</th><th>템플릿</th><th>권한</th><th></th></tr></thead><tbody></tbody></table>
+        <p id="bindEmpty" class="muted center-text hidden">매핑된 클라이언트가 없습니다.</p>
+      </div>
+    </section>
+
+    <!-- 관리자 -->
+    <section id="tab-managers" class="hidden">
+      <form id="mgrForm" class="card inline">
+        <h3>관리 권한 위임</h3>
+        <input name="identity" placeholder="사용자 또는 관리 인증서 이름" maxlength="128" required>
+        <select name="scope" required></select>
+        <select name="role"><option value="admin">admin (관리)</option><option value="audit">audit (조회만)</option></select>
+        <button class="primary" type="submit">부여</button>
+      </form>
+      <p id="mgrErr" class="err"></p>
+      <div class="tablewrap">
+        <table id="managers"><thead><tr><th>사용자</th><th>범위</th><th>역할</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- 로그 -->
+    <section id="tab-logs" class="hidden">
+      <div class="toolbar">
+        <button data-log="client" class="seg active">클라이언트 로그</button>
+        <button data-log="admin" class="seg">관리 API 로그</button>
+        <button data-log="console" class="seg">콘솔 로그</button>
+        <input id="logFilter" type="search" placeholder="필터 (사용자, 동작, 결과…)">
+        <span class="spacer"></span>
+        <button id="logRefresh" class="ghost">새로고침</button>
+      </div>
+      <p id="logHelp" class="muted"></p>
+      <div class="tablewrap">
+        <table id="logTable"><thead><tr><th>시각</th><th>구분</th><th>주체</th><th>동작</th><th>대상</th><th>상세</th><th>결과</th><th>IP</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- 라이프사이클 -->
+    <section id="tab-lifecycle" class="hidden">
+      <div class="card">
+        <h2>키 라이프사이클 (KMIP 상태 모델)</h2>
+        <div class="flow">
+          <div class="node pre">Pre-Active<small>생성됨, 사용 전</small></div>
+          <div class="arrow">활성화 →</div>
+          <div class="node active">Active<small>사용 중</small></div>
+          <div class="arrow">비활성화 →</div>
+          <div class="node deact">Deactivated<small>기존 데이터 처리만</small></div>
+          <div class="arrow">파기 →</div>
+          <div class="node dest">Destroyed<small>키 값 삭제</small></div>
+        </div>
+        <div class="flow second">
+          <div class="node comp">Compromised<small>침해 (파기 전 어느 상태에서나)</small></div>
+          <div class="arrow">파기 →</div>
+          <div class="node dest">Destroyed Compromised</div>
+        </div>
+        <ul class="plain">
+          <li><b>키 회전</b> — 활성 대칭키를 새 키로 교체합니다. 같은 이름의 새 키가 Active, 이전 키는 Deactivated(복호화 전용)가 되어 이름으로 조회하는 클라이언트가 두 버전을 함께 받습니다.</li>
+          <li><b>침해 표시·파기</b>는 되돌릴 수 없습니다. 파기하면 키 값이 삭제되고 기록만 남습니다.</li>
+          <li>관리 화면과 관리 API는 <b>키 값을 절대 보여주지 않습니다</b>. 키 값은 권한 템플릿에 <code>get</code>이 있는 클라이언트만 KMIP/REST로 받습니다.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 새 키 -->
+<dialog id="createDlg">
+  <form id="createForm" method="dialog" class="dlg">
+    <h2>새 키 생성</h2>
+    <div class="row">
+      <label>서비스(권한그룹)<select name="group" required></select></label>
+      <label>이름 (선택)<input name="name" maxlength="128" placeholder="예: payments-key"></label>
+    </div>
+    <label>알고리즘<select name="algo" required></select></label>
+    <p id="algoNote" class="muted"></p>
+    <fieldset><legend>허용 용도</legend><div id="usageBox" class="usage"></div></fieldset>
+    <label class="check"><input type="checkbox" name="activate"> 생성 후 바로 활성화</label>
+    <p id="createErr" class="err" role="alert"></p>
+    <div class="actions"><button value="cancel" class="ghost" formnovalidate>취소</button><button id="createGo" class="primary" value="ok">생성</button></div>
+  </form>
+</dialog>
+
+<!-- 키 상세 -->
+<dialog id="detailDlg">
+  <div class="dlg">
+    <h2 id="dTitle"></h2>
+    <dl id="dBody" class="kv"></dl>
+    <h3>이력</h3>
+    <ol id="dTimeline" class="timeline"></ol>
+    <p id="dErr" class="err" role="alert"></p>
+    <div id="dActions" class="actions wrap"></div>
+    <div class="actions"><button id="dClose" class="ghost">닫기</button></div>
+  </div>
+</dialog>
+
+<!-- 확인 -->
+<dialog id="confirmDlg">
+  <form method="dialog" class="dlg" id="confirmForm">
+    <h2 id="cTitle"></h2>
+    <p id="cText"></p>
+    <label id="cTypeWrap" class="hidden">계속하려면 아래 값을 그대로 입력하세요: <b id="cExpect"></b><input id="cType" autocomplete="off"></label>
+    <p id="cErr" class="err" role="alert"></p>
+    <div class="actions"><button value="cancel" class="ghost" formnovalidate>취소</button><button id="cGo" class="primary" value="ok">확인</button></div>
+  </form>
+</dialog>
+
+<!-- 그룹 생성/수정 -->
+<dialog id="groupDlg">
+  <form method="dialog" class="dlg" id="groupForm">
+    <h2 id="gTitle"></h2>
+    <label>이름<input name="name" maxlength="64" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+    <label id="gParentWrap">상위그룹<select name="parent"></select></label>
+    <label>설명<input name="description" maxlength="256"></label>
+    <p id="gErr" class="err" role="alert"></p>
+    <div class="actions"><button value="cancel" class="ghost" formnovalidate>취소</button><button class="primary" value="ok">저장</button></div>
+  </form>
+</dialog>
+
+<!-- 템플릿 생성/수정 -->
+<dialog id="tplDlg">
+  <form method="dialog" class="dlg" id="tplForm">
+    <h2 id="tTitle"></h2>
+    <label>이름<input name="name" maxlength="64" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+    <label>설명<input name="description" maxlength="256"></label>
+    <fieldset><legend>허용할 오퍼레이션</legend><div id="opBox" class="opbox"></div></fieldset>
+    <div class="actions wrap"><button type="button" id="tplCrud" class="ghost">CRUD 전체</button><button type="button" id="tplRead" class="ghost">읽기(R)만</button><button type="button" id="tplNone" class="ghost">모두 해제</button></div>
+    <p id="tErr" class="err" role="alert"></p>
+    <div class="actions"><button value="cancel" class="ghost" formnovalidate>취소</button><button class="primary" value="ok">저장</button></div>
+  </form>
+</dialog>
+
+<!-- 그룹의 매핑·관리자 -->
+<dialog id="scopeDlg">
+  <div class="dlg wide">
+    <h2 id="sTitle"></h2>
+    <h3>클라이언트 매핑</h3>
+    <div id="sBind"></div>
+    <form id="sBindForm" class="inline"><input name="client" placeholder="클라이언트 CN" required maxlength="128"><select name="template"></select><button class="primary" type="submit">추가</button></form>
+    <h3>관리자</h3>
+    <div id="sMgr"></div>
+    <form id="sMgrForm" class="inline"><input name="identity" placeholder="사용자 이름" required maxlength="128"><select name="role"><option value="admin">admin</option><option value="audit">audit</option></select><button class="primary" type="submit">추가</button></form>
+    <p id="sErr" class="err" role="alert"></p>
+    <div class="actions"><button id="sClose" class="ghost">닫기</button></div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>
