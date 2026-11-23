@@ -30,6 +30,10 @@ services:
       - -root-admin=admin
       # the console may act for the people it has logged in
       - -trusted-proxy=kms-console
+      # self test of KMIP / REST / admin API / master key / data folder every 5 minutes; results go to the system log
+      - -selfcheck-interval=5m
+      - -selfcheck-cert=/pki/selfcheck.crt
+      - -selfcheck-key=/pki/selfcheck.key
     user: "${PQC_UID:-1000}:${PQC_GID:-1000}"
     group_add: ["${TSS_GID:-985}"]
     devices: ["/dev/tpmrm0:/dev/tpmrm0"]
@@ -37,6 +41,10 @@ services:
       - ./pki/ca.crt:/pki/ca.crt:ro
       - ./pki/kms.crt:/pki/kms.crt:ro
       - ./pki/kms.key:/pki/kms.key:ro
+      - ./pki/selfcheck.crt:/pki/selfcheck.crt:ro
+      - ./pki/selfcheck.key:/pki/selfcheck.key:ro
+      # the host's system log (syslog / journald) for start, stop, errors and self test results
+      - /dev/log:/dev/log
       - ./data:/data
     ports:
       # all three ports are published on loopback only; open a port to other hosts deliberately
@@ -66,6 +74,9 @@ services:
       - -backend-key=/pki/console-client.key
       - -backend-server-name=kms
       - -otp=${PQC_OTP:-required}
+      # dashboard: ports to check, and the host agent (systemd unit kmsagent) that reports and controls the containers
+      - -probe=kmip=kms:5696,rest=kms:9998,admin=kms:9999
+      - -agent-socket=/run/kms-agent/agent.sock
       - -otp-issuer=pqc-kms
       - serve
     volumes:
@@ -75,6 +86,8 @@ services:
       - ./pki/console-client.crt:/pki/console-client.crt:ro
       - ./pki/console-client.key:/pki/console-client.key:ro
       - ./console:/console
+      - ./run:/run/kms-agent
+      - /dev/log:/dev/log
     ports:
       - "${PQC_CONSOLE_BIND:-0.0.0.0}:8443:8443"
     deploy:

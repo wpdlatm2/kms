@@ -45,8 +45,8 @@ R="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" "$ADMIN/admin/v1/me" 
 [ "$R" = "000" ] && ok "no client certificate: the TLS handshake is refused" || bad "served without a certificate: $R"
 
 step "permission structure: super group -> service, mapping by super group"
-adm POST /admin/v1/groups '{"name":"itest-div","kind":"super","description":"integration test"}' >/dev/null
-adm POST /admin/v1/groups '{"name":"itest-svc","kind":"service","parent":"itest-div","description":"integration test service"}' >/dev/null
+adm POST /admin/v1/groups '{"name":"itest-div","kind":"super","owner":"itest.owner","description":"integration test"}' >/dev/null
+adm POST /admin/v1/groups '{"name":"itest-svc","kind":"service","parent":"itest-div","owner":"itest.owner","description":"integration test service"}' >/dev/null
 R="$(adm GET /admin/v1/groups)"; printf '%s' "$R" | body | grep -q '"name": "itest-svc"' && ok "service itest-svc under itest-div exists" || bad "groups: $(printf '%s' "$R" | body | head -c 300)"
 
 step "TPM-protected Enterprise keystore (localhsm) and node certificate"
@@ -68,7 +68,7 @@ step "without a mapping the node sees nothing"
 SYNC -kmip-types "$NAME=aes256-gcm" kmip-sync "$NAME" >"$WORK/out" 2>&1 && bad "sync worked without a mapping" || ok "sync refused: $(head -c 120 "$WORK/out")"
 
 step "map the node to the SUPER group with the built-in guest template (read only)"
-expect "client mapped to itest-div as guest" 200 "$(adm PUT /admin/v1/bindings "{\"client\":\"$NODE\",\"group\":\"itest-div\",\"template\":\"guest\"}")"
+expect "client mapped to itest-div as guest" 200 "$(adm PUT /admin/v1/bindings "{\"client\":\"$NODE\",\"group\":\"itest-div\",\"template\":\"guest\",\"approvalCode\":\"ITEST-APR-1\",\"owner\":\"itest.owner\"}")"
 SYNC -kmip-types "$NAME=aes256-gcm" kmip-sync "$NAME" >"$WORK/out" 2>&1; cat "$WORK/out"
 grep -q "created: \[$NAME\]" "$WORK/out" && ok "key fetched by name through the super-group mapping" || bad "sync output unexpected"
 PLAIN="pqc-kms integration $(date +%s)"
@@ -94,10 +94,10 @@ CT2="$(printf '%s' "$PLAIN" | H encrypt "$NAME" 2>/dev/null)"
 [ "$(printf '%s' "$CT" | H decrypt "$NAME" 2>/dev/null)" = "$PLAIN" ] && ok "data from before the rotation still decrypts" || bad "old data lost"
 
 step "permission template edit takes effect at once"
-adm POST /admin/v1/templates '{"name":"itest-meta","description":"metadata only","operations":["locate","getattributes"]}' >/dev/null
-expect "node moved to the metadata-only template" 200 "$(adm PUT /admin/v1/bindings "{\"client\":\"$NODE\",\"group\":\"itest-div\",\"template\":\"itest-meta\"}")"
+adm POST /admin/v1/templates '{"name":"itest-meta","description":"metadata only","operations":["locate","getattributes"],"approvalCode":"ITEST-APR-4"}' >/dev/null
+expect "node moved to the metadata-only template" 200 "$(adm PUT /admin/v1/bindings "{\"client\":\"$NODE\",\"group\":\"itest-div\",\"template\":\"itest-meta\",\"approvalCode\":\"ITEST-APR-2\",\"owner\":\"itest.owner\"}")"
 SYNC -kmip-types "$NAME=aes256-gcm" kmip-sync "$NAME" >"$WORK/out" 2>&1 && bad "sync worked without 'get'" || ok "sync refused without the get operation"
-expect "template edited: get added" 200 "$(adm PUT /admin/v1/templates/itest-meta '{"description":"metadata + value","operations":["locate","getattributes","get"]}')"
+expect "template edited: get added" 200 "$(adm PUT /admin/v1/templates/itest-meta '{"description":"metadata + value","operations":["locate","getattributes","get"],"approvalCode":"ITEST-APR-5"}')"
 SYNC -kmip-types "$NAME=aes256-gcm" kmip-sync "$NAME" >"$WORK/out" 2>&1 && ok "sync works again after the edit" || bad "sync after edit: $(cat "$WORK/out")"
 
 step "deactivate and compromise reach localhsm"
@@ -117,7 +117,7 @@ SYNC -kmip-types "$NAME=aes256-gcm" kmip-sync "$NAME" >"$WORK/out" 2>&1 && bad "
 step "client REST API with plain JSON values (software certificate, guest on the service)"
 openssl req -newkey rsa:2048 -nodes -keyout "$WORK/rest.key" -out "$WORK/rest.csr" -subj "/CN=rest-itest" 2>/dev/null
 openssl x509 -req -in "$WORK/rest.csr" -CA pki/ca.crt -CAkey pki/ca.key -CAcreateserial -out "$WORK/rest.crt" -days 2 -extfile "$WORK/node.ext" 2>/dev/null
-adm PUT /admin/v1/bindings '{"client":"rest-itest","group":"itest-svc","template":"guest"}' >/dev/null
+adm PUT /admin/v1/bindings '{"client":"rest-itest","group":"itest-svc","template":"guest","approvalCode":"ITEST-APR-3","owner":"itest.owner"}' >/dev/null
 rest() { curl -s -w '\n%{http_code}' --cacert "$CA" --cert "$WORK/rest.crt" --key "$WORK/rest.key" -H 'Content-Type: application/json' -X "$1" ${3:+-d "$3"} "$CLIENT$2"; }
 PQCNAME="itest-pqc-$(date +%s)"
 R="$(adm POST /admin/v1/keys "{\"algorithm\":\"ml-dsa-65\",\"group\":\"itest-svc\",\"name\":\"$PQCNAME\",\"activate\":true}")"; expect "post-quantum key pair (ML-DSA-65) created" 201 "$R"
@@ -130,6 +130,20 @@ R="$(rest GET "/v1/keys/$PRIV/value?encoding=hex")"; expect "guest reads the val
 expect "guest cannot create" 403 "$(rest POST /v1/keys '{"algorithm":"aes-128"}')"
 expect "guest cannot destroy" 404 "$(rest POST "/v1/keys/$PRIV/destroy")"
 R="$(rest GET /v1/keys/nope)"; printf '%s' "$R" | body | grep -q '"code": "not_found"' && printf '%s' "$R" | body | grep -q '"requestId"' && ok "errors carry code, message and request id" || bad "error format"
+
+step "audit evidence"
+R="$(adm GET '/admin/v1/audit/verify?log=admin')"; printf '%s' "$R" | body | grep -q '"ok": true' && ok "admin log: hash chain and MACs verify" || bad "admin log chain: $(printf '%s' "$R" | body | head -c 300)"
+R="$(adm GET '/admin/v1/audit/verify?log=client')"; printf '%s' "$R" | body | grep -q '"ok": true' && ok "client log: hash chain and MACs verify" || bad "client log chain"
+adm GET '/admin/v1/logs/admin?category=permission-change&q=ITEST-APR-1' | body > "$WORK/perm.json"
+python3 - "$WORK/perm.json" <<'PYEOF' && ok "permission grants carry approval number and responsible person" || bad "grant evidence"
+import sys, json
+e = json.load(open(sys.argv[1]))["entries"]
+g = [x for x in e if x["op"] == "binding-put" and x.get("approval") == "ITEST-APR-1"]
+assert g and all(x.get("owner") == "itest.owner" and x["outcome"] == "success" and x.get("hash") and x.get("mac") for x in g), e
+PYEOF
+R="$(adm POST /admin/v1/audit/reviews '{"log":"admin","from":"2026-11-01","to":"2026-11-07","finding":"none","note":"integration test review"}')"; expect "review record" 201 "$R"
+curl -s -o "$WORK/audit.zip" --cacert "$CA" --cert pki/console-client.crt --key pki/console-client.key -H 'X-Acting-User: admin' "$ADMIN/admin/v1/audit/export?log=admin"
+python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert sorted(z.namelist())==["admin-audit.jsonl","manifest.json"]' "$WORK/audit.zip" && ok "evidence export (zip with manifest) available" || bad "export"
 
 step "the two logs are separate"
 adm GET '/admin/v1/logs/client?limit=500' | body > "$WORK/client.log.json"

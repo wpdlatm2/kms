@@ -20,6 +20,21 @@
   </form>
 </div>
 
+<!-- 비밀번호 변경(만료·관리자 설정 후 최초) -->
+<div id="pwForce" class="center hidden">
+  <form id="pwForceForm" class="card login" autocomplete="off">
+    <h1>비밀번호를 변경하세요</h1>
+    <p id="pwForceWhy" class="muted"></p>
+    <label>현재 비밀번호<input name="current" type="password" autocomplete="current-password" required></label>
+    <label>새 비밀번호<input name="new" type="password" autocomplete="new-password" required></label>
+    <label>새 비밀번호 확인<input name="again" type="password" autocomplete="new-password" required></label>
+    <p class="muted small" id="pwRules"></p>
+    <p id="pwForceErr" class="err" role="alert"></p>
+    <button class="primary" type="submit">변경</button>
+    <button type="button" id="pwForceLogout" class="ghost">로그아웃</button>
+  </form>
+</div>
+
 <!-- OTP 최초 등록 -->
 <div id="enroll" class="center hidden">
   <div class="card enroll">
@@ -56,18 +71,36 @@
   <header>
     <div class="brand">KMS 관리 콘솔 <span id="kmsInfo" class="muted"></span></div>
     <nav id="tabs">
+      <button data-tab="dashboard" class="tab hidden">대시보드</button>
       <button data-tab="keys" class="tab active">키</button>
       <button data-tab="groups" class="tab">서비스·그룹</button>
       <button data-tab="templates" class="tab">권한 템플릿</button>
       <button data-tab="clients" class="tab">클라이언트 매핑</button>
       <button data-tab="managers" class="tab">관리자</button>
-      <button data-tab="logs" class="tab">로그</button>
+      <button data-tab="logs" class="tab">감사·로그</button>
+      <button data-tab="security" class="tab hidden">계정·보안</button>
       <button data-tab="lifecycle" class="tab">라이프사이클</button>
     </nav>
-    <div class="who"><span id="whoami"></span><button id="logout" class="ghost">로그아웃</button></div>
+    <div class="who"><span id="whoami"></span><button id="changePw" class="ghost">비밀번호 변경</button><button id="logout" class="ghost">로그아웃</button></div>
   </header>
 
   <main>
+    <!-- 대시보드 -->
+    <section id="tab-dashboard" class="hidden">
+      <div id="dashBanner" class="banner ok"></div>
+      <div class="toolbar"><span id="dashTime" class="muted"></span><span class="spacer"></span><button id="dashRefresh" class="ghost">새로고침</button><button id="dashVerify" class="ghost">감사로그 다시 검증</button></div>
+      <div id="dashCards" class="cards dashcards"></div>
+      <h3>서비스</h3>
+      <div class="tablewrap"><table id="dashSvc"><thead><tr><th>서비스</th><th>상태</th><th>가동 시간</th><th>재시작</th><th>이미지</th><th></th></tr></thead><tbody></tbody></table></div>
+      <p id="dashAgentNote" class="muted small"></p>
+      <h3>포트·인증서</h3>
+      <div class="tablewrap"><table id="dashPorts"><thead><tr><th>구분</th><th>주소</th><th>상태</th><th>응답</th><th>서버 인증서</th><th>만료</th></tr></thead><tbody></tbody></table></div>
+      <h3>감사로그 무결성</h3>
+      <div class="tablewrap"><table id="dashAudit"><thead><tr><th>로그</th><th>무결성</th><th>항목 수</th><th>마지막 순번</th><th>검증 시각</th></tr></thead><tbody></tbody></table></div>
+      <h3>호스트</h3>
+      <div id="dashHost" class="hostbox"></div>
+    </section>
+
     <!-- 키 -->
     <section id="tab-keys">
       <div id="cards" class="cards"></div>
@@ -112,13 +145,15 @@
       <form id="bindForm" class="card inline">
         <h3>클라이언트를 그룹에 매핑</h3>
         <input name="client" placeholder="클라이언트 인증서 CN (예: hsm-node-a)" maxlength="128" required>
+        <input name="approvalCode" placeholder="승인번호 (예: APR-2026-0042)" required maxlength="64">
+        <input name="owner" placeholder="담당자" required maxlength="64">
         <select name="group" required></select>
         <select name="template" required></select>
         <button class="primary" type="submit">매핑</button>
       </form>
       <p id="bindErr" class="err"></p>
       <div class="tablewrap">
-        <table id="bindings"><thead><tr><th>클라이언트</th><th>그룹</th><th>템플릿</th><th>권한</th><th></th></tr></thead><tbody></tbody></table>
+        <table id="bindings"><thead><tr><th>클라이언트</th><th>그룹</th><th>템플릿</th><th>권한</th><th>승인번호</th><th>담당자</th><th>부여</th><th></th></tr></thead><tbody></tbody></table>
         <p id="bindEmpty" class="muted center-text hidden">매핑된 클라이언트가 없습니다.</p>
       </div>
     </section>
@@ -128,13 +163,15 @@
       <form id="mgrForm" class="card inline">
         <h3>관리 권한 위임</h3>
         <input name="identity" placeholder="사용자 또는 관리 인증서 이름" maxlength="128" required>
+        <input name="approvalCode" placeholder="승인번호 (예: APR-2026-0042)" required maxlength="64">
+        <input name="owner" placeholder="담당자" required maxlength="64">
         <select name="scope" required></select>
         <select name="role"><option value="admin">admin (관리)</option><option value="audit">audit (조회만)</option></select>
         <button class="primary" type="submit">부여</button>
       </form>
       <p id="mgrErr" class="err"></p>
       <div class="tablewrap">
-        <table id="managers"><thead><tr><th>사용자</th><th>범위</th><th>역할</th><th></th></tr></thead><tbody></tbody></table>
+        <table id="managers"><thead><tr><th>사용자</th><th>범위</th><th>역할</th><th>승인번호</th><th>담당자</th><th>부여</th><th></th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
@@ -144,14 +181,98 @@
         <button data-log="client" class="seg active">클라이언트 로그</button>
         <button data-log="admin" class="seg">관리 API 로그</button>
         <button data-log="console" class="seg">콘솔 로그</button>
-        <input id="logFilter" type="search" placeholder="필터 (사용자, 동작, 결과…)">
         <span class="spacer"></span>
-        <button id="logRefresh" class="ghost">새로고침</button>
+        <button id="logRefresh" class="ghost">조회</button>
+      </div>
+      <form id="logFilterForm" class="toolbar" autocomplete="off">
+        <label>시작 <input name="from" type="date"></label>
+        <label>종료 <input name="to" type="date"></label>
+        <select name="category">
+          <option value="">분류 전체</option>
+          <option value="authentication">인증</option>
+          <option value="key-lifecycle">키 수명주기</option>
+          <option value="key-access">키 조회·반출</option>
+          <option value="permission-change">권한 변경</option>
+          <option value="audit-access">감사로그 접근</option>
+          <option value="api-access">API 접근</option>
+          <option value="system">시스템</option>
+          <option value="audit-maintenance">감사로그 관리</option>
+        </select>
+        <select name="outcome">
+          <option value="">결과 전체</option>
+          <option value="success">성공</option>
+          <option value="failure">실패</option>
+          <option value="denied">거부</option>
+        </select>
+        <input name="who" placeholder="주체(사용자)" maxlength="128">
+        <input name="q" type="search" placeholder="검색 (동작, 대상, 승인번호…)" maxlength="128">
+      </form>
+      <div class="toolbar">
+        <button id="auditVerify" class="ghost">무결성 검증</button>
+        <button id="auditExport" class="ghost">증적 내보내기 (ZIP)</button>
+        <button id="auditReviewBtn" class="ghost">검토 기록 남기기</button>
+        <span id="auditVerdict" class="muted"></span>
       </div>
       <p id="logHelp" class="muted"></p>
+      <form id="reviewForm" class="card hidden" autocomplete="off">
+        <h3>정기 검토 기록</h3>
+        <p class="muted">선택한 로그의 기간을 검토했다는 사실을 감사 기록에 남깁니다 (검토자는 로그인 사용자로 기록됩니다).</p>
+        <div class="toolbar">
+          <label>기간 시작 <input name="from" type="date" required></label>
+          <label>기간 종료 <input name="to" type="date" required></label>
+          <select name="finding"><option value="none">이상 없음</option><option value="anomaly">이상 발견</option></select>
+          <input name="approvalCode" placeholder="결재번호(선택)" maxlength="64">
+        </div>
+        <textarea name="note" rows="3" maxlength="1000" placeholder="검토 내용 (이상 발견 시 필수)"></textarea>
+        <div class="toolbar"><button class="primary" type="submit">기록</button><button type="button" id="reviewCancel" class="ghost">취소</button><span id="reviewErr" class="err"></span></div>
+      </form>
       <div class="tablewrap">
-        <table id="logTable"><thead><tr><th>시각</th><th>구분</th><th>주체</th><th>동작</th><th>대상</th><th>상세</th><th>결과</th><th>IP</th></tr></thead><tbody></tbody></table>
+        <table id="logTable"><thead><tr><th>순번</th><th>시각</th><th>분류</th><th>주체</th><th>동작</th><th>대상</th><th>승인번호</th><th>담당자</th><th>상세</th><th>결과</th><th>IP</th></tr></thead><tbody></tbody></table>
       </div>
+      <details class="card"><summary>검토 이력</summary><div class="tablewrap"><table id="reviewTable"><thead><tr><th>시각</th><th>검토자</th><th>대상 로그</th><th>내용</th></tr></thead><tbody></tbody></table></div></details>
+    </section>
+
+    <!-- 계정·보안 -->
+    <section id="tab-security" class="hidden">
+      <h3>콘솔 계정</h3>
+      <div class="toolbar"><button id="newUser" class="primary hidden">+ 계정 추가</button><span class="spacer"></span><button id="usersRefresh" class="ghost">새로고침</button></div>
+      <div class="tablewrap"><table id="userTable"><thead><tr><th>계정</th><th>상태</th><th>비밀번호</th><th>OTP</th><th>최근 로그인</th><th></th></tr></thead><tbody></tbody></table></div>
+      <p class="muted small">계정 추가·비밀번호 재설정·잠금 해제·OTP 초기화에는 승인번호와 담당자가 필요하며 모두 감사 기록에 남습니다. 계정에 관리 권한을 주는 것은 「관리자」 탭에서 따로 합니다.</p>
+
+      <h3>보안 설정</h3>
+      <form id="secForm" class="card" autocomplete="off">
+        <fieldset><legend>비밀번호 규칙</legend>
+          <div class="formgrid">
+            <label>최소 길이 (8–64)<input name="minLength" type="number" min="8" max="64" required></label>
+            <label>필요한 문자 종류 수 (1–4: 대문자·소문자·숫자·기호)<input name="minClasses" type="number" min="1" max="4" required></label>
+            <label>이전 비밀번호 재사용 금지 횟수 (0–10)<input name="history" type="number" min="0" max="10" required></label>
+            <label>유효 기간 일 (0 = 만료 없음, 최대 365)<input name="maxAgeDays" type="number" min="0" max="365" required></label>
+            <label>만료 예고 일 (0–60)<input name="warnDays" type="number" min="0" max="60" required></label>
+          </div>
+          <label class="check"><input name="forbidUsername" type="checkbox"> 계정 이름이 포함된 비밀번호 금지</label>
+          <label class="check"><input name="forbidRepeat" type="checkbox"> 같은 문자 3회 이상 연속 금지</label>
+          <label class="check"><input name="forceChange" type="checkbox"> 관리자가 설정한 비밀번호는 첫 로그인에서 반드시 변경</label>
+        </fieldset>
+        <fieldset><legend>로그인 실패 잠금</legend>
+          <div class="formgrid">
+            <label>잠금까지 실패 횟수 (3–10)<input name="maxFails" type="number" min="3" max="10" required></label>
+            <label>실패를 세는 시간 분 (1–60)<input name="windowMinutes" type="number" min="1" max="60" required></label>
+            <label>잠금 시간 분 (0 = 관리자가 풀 때까지, 최대 1440)<input name="lockMinutes" type="number" min="0" max="1440" required></label>
+          </div>
+        </fieldset>
+        <fieldset><legend>세션</legend>
+          <div class="formgrid">
+            <label>세션 최대 시간 (1–24시간)<input name="ttlHours" type="number" min="1" max="24" required></label>
+            <label>미사용 자동 로그아웃 분 (5–240)<input name="idleMinutes" type="number" min="5" max="240" required></label>
+          </div>
+        </fieldset>
+        <div class="formgrid evid">
+          <label>승인번호<input name="approvalCode" maxlength="64" autocomplete="off"></label>
+          <label>담당자<input name="owner" maxlength="64" autocomplete="off"></label>
+        </div>
+        <p id="secMeta" class="muted small"></p>
+        <div class="toolbar"><button id="secSave" class="primary" type="submit">저장</button><span id="secErr" class="err"></span></div>
+      </form>
     </section>
 
     <!-- 라이프사이클 -->
@@ -183,6 +304,28 @@
 </div>
 
 <!-- 새 키 -->
+<dialog id="evDlg">
+  <form method="dialog" id="evForm" autocomplete="off">
+    <h3 id="evTitle"></h3>
+    <p id="evText" class="muted"></p>
+    <div id="evFields"></div>
+    <p id="evErr" class="err" role="alert"></p>
+    <div class="toolbar"><button value="cancel" type="button" id="evCancel" class="ghost">취소</button><span class="spacer"></span><button id="evGo" class="primary" type="submit">확인</button></div>
+  </form>
+</dialog>
+
+<dialog id="pwDlg">
+  <form id="pwForm" autocomplete="off">
+    <h3>비밀번호 변경</h3>
+    <label>현재 비밀번호<input name="current" type="password" autocomplete="current-password" required></label>
+    <label>새 비밀번호<input name="new" type="password" autocomplete="new-password" required></label>
+    <label>새 비밀번호 확인<input name="again" type="password" autocomplete="new-password" required></label>
+    <p class="muted small pwRules"></p>
+    <p id="pwErr" class="err" role="alert"></p>
+    <div class="toolbar"><button type="button" id="pwCancel" class="ghost">취소</button><span class="spacer"></span><button class="primary" type="submit">변경</button></div>
+  </form>
+</dialog>
+
 <dialog id="createDlg">
   <form id="createForm" method="dialog" class="dlg">
     <h2>새 키 생성</h2>
@@ -217,6 +360,7 @@
   <form method="dialog" class="dlg" id="confirmForm">
     <h2 id="cTitle"></h2>
     <p id="cText"></p>
+    <label id="cApprovalWrap" class="hidden">승인번호 (선택, 감사 기록에 남김)<input id="cApproval" maxlength="64" autocomplete="off"></label>
     <label id="cTypeWrap" class="hidden">계속하려면 아래 값을 그대로 입력하세요: <b id="cExpect"></b><input id="cType" autocomplete="off"></label>
     <p id="cErr" class="err" role="alert"></p>
     <div class="actions"><button value="cancel" class="ghost" formnovalidate>취소</button><button id="cGo" class="primary" value="ok">확인</button></div>
@@ -228,6 +372,7 @@
   <form method="dialog" class="dlg" id="groupForm">
     <h2 id="gTitle"></h2>
     <label>이름<input name="name" maxlength="64" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+    <label>담당자 (책임자)<input name="owner" maxlength="64" required></label>
     <label id="gParentWrap">상위그룹<select name="parent"></select></label>
     <label>설명<input name="description" maxlength="256"></label>
     <p id="gErr" class="err" role="alert"></p>
@@ -240,6 +385,7 @@
   <form method="dialog" class="dlg" id="tplForm">
     <h2 id="tTitle"></h2>
     <label>이름<input name="name" maxlength="64" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"></label>
+    <label>승인번호 (이 변경의 근거)<input name="approvalCode" maxlength="64" required></label>
     <label>설명<input name="description" maxlength="256"></label>
     <fieldset><legend>허용할 오퍼레이션</legend><div id="opBox" class="opbox"></div></fieldset>
     <div class="actions wrap"><button type="button" id="tplCrud" class="ghost">CRUD 전체</button><button type="button" id="tplRead" class="ghost">읽기(R)만</button><button type="button" id="tplNone" class="ghost">모두 해제</button></div>
@@ -254,10 +400,10 @@
     <h2 id="sTitle"></h2>
     <h3>클라이언트 매핑</h3>
     <div id="sBind"></div>
-    <form id="sBindForm" class="inline"><input name="client" placeholder="클라이언트 CN" required maxlength="128"><select name="template"></select><button class="primary" type="submit">추가</button></form>
+    <form id="sBindForm" class="inline"><input name="client" placeholder="클라이언트 CN" required maxlength="128"><input name="approvalCode" placeholder="승인번호 (예: APR-2026-0042)" required maxlength="64"><input name="owner" placeholder="담당자" required maxlength="64"><select name="template"></select><button class="primary" type="submit">추가</button></form>
     <h3>관리자</h3>
     <div id="sMgr"></div>
-    <form id="sMgrForm" class="inline"><input name="identity" placeholder="사용자 이름" required maxlength="128"><select name="role"><option value="admin">admin</option><option value="audit">audit</option></select><button class="primary" type="submit">추가</button></form>
+    <form id="sMgrForm" class="inline"><input name="identity" placeholder="사용자 이름" required maxlength="128"><input name="approvalCode" placeholder="승인번호 (예: APR-2026-0042)" required maxlength="64"><input name="owner" placeholder="담당자" required maxlength="64"><select name="role"><option value="admin">admin</option><option value="audit">audit</option></select><button class="primary" type="submit">추가</button></form>
     <p id="sErr" class="err" role="alert"></p>
     <div class="actions"><button id="sClose" class="ghost">닫기</button></div>
   </div>

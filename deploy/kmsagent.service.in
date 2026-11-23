@@ -1,0 +1,20 @@
+[Unit]
+Description=pqc-kms host agent (service state and start/stop for the web console)
+After=docker.service
+Requires=docker.service
+
+[Service]
+User=@USER@
+ExecStart=@DIR@/kmsagent -socket @DIR@/run/agent.sock -socket-mode 660 -services kms=pqc-kms-kms-1,console=pqc-kms-console-1 -disks /docker,/data
+StandardOutput=null
+StandardError=null
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=@DIR@/run
+
+[Install]
+WantedBy=multi-user.target

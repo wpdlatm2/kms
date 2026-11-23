@@ -221,10 +221,10 @@ func fuzzSrv(tb testing.TB) (*Server, kms.Principal) {
 	}
 	svc := kms.NewService(st, []string{"root"})
 	root := svc.AdminPrincipal("root")
-	if err := svc.PutGroup(root, kms.GroupReq{Name: "payments", Kind: kms.KindService}, true); err != nil {
+	if err := svc.PutGroup(root, kms.GroupReq{Owner: "tester", Name: "payments", Kind: kms.KindService}, true); err != nil {
 		tb.Fatal(err)
 	}
-	if err := svc.PutBinding(root, "app", "payments", "owner"); err != nil {
+	if err := svc.PutBinding(root, "app", "payments", "owner", kms.GrantInfo{Approval: "APR-T1", Owner: "tester"}); err != nil {
 		tb.Fatal(err)
 	}
 	return &Server{Svc: svc}, kms.ClientPrincipal("app")

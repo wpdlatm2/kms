@@ -35,10 +35,12 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	svc := kms.NewService(st, []string{"root"})
-	cl, _ := logs.Open("", "client")
-	al, _ := logs.Open("", "admin")
+	macKey := []byte("0123456789abcdef0123456789abcdef")
+	cl, _ := logs.OpenWith(logs.Options{Path: filepath.Join(dir, "client.log.jsonl"), Name: "client", Key: macKey})
+	al, _ := logs.OpenWith(logs.Options{Path: filepath.Join(dir, "admin.log.jsonl"), Name: "admin", Key: macKey})
+	t.Cleanup(func() { cl.Close(); al.Close() })
 	svc.Audit = func(ev kms.AuditEvent) {
-		e := logs.Entry{Plane: string(ev.Plane), Kind: "event", Who: ev.Who, Op: ev.Op, Target: ev.Target, Detail: ev.Detail, Result: ev.Result}
+		e := logs.Entry{Plane: string(ev.Plane), Kind: "event", Who: ev.Who, Op: ev.Op, Target: ev.Target, Detail: ev.Detail, Result: ev.Result, Approval: ev.Approval, Owner: ev.Owner}
 		if ev.Plane == kms.PlaneAdmin {
 			al.Add(e)
 		} else {
@@ -51,7 +53,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := NewAdmin(&Admin{Svc: svc, Log: al, ClientLog: cl, TrustedProxies: []string{"console"}})
+	admin := NewAdmin(&Admin{Svc: svc, Log: al, ClientLog: cl, TrustedProxies: []string{"console"}, MACKey: macKey})
 	srvA, lnA, err := Serve("127.0.0.1:0", pki.ServerTLS(), admin)
 	if err != nil {
 		t.Fatal(err)
@@ -111,9 +113,9 @@ func (c *caller) must(want int, method, path string, body any) []byte {
 func TestSeparatePortsAndLogs(t *testing.T) {
 	r := newRig(t)
 	root := r.caller(r.adminAddr, "root", "")
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service"})
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner"})
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "viewer", "group": "pay", "template": "guest"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "viewer", "group": "pay", "template": "guest", "approvalCode": "APR-T1", "owner": "tester"})
 
 	app := r.caller(r.clientAddr, "app", "")
 	viewer := r.caller(r.clientAddr, "viewer", "")
@@ -233,13 +235,13 @@ func TestSeparatePortsAndLogs(t *testing.T) {
 func TestDelegatedAdministrationThroughTheConsoleProxy(t *testing.T) {
 	r := newRig(t)
 	root := r.caller(r.adminAddr, "root", "")
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "division", "kind": "super"})
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "other", "kind": "super"})
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "parent": "division"})
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "mail", "kind": "service", "parent": "other"})
-	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "dora", "scope": "division", "role": "admin"})
-	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "ava", "scope": "ALL", "role": "audit"})
-	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "sam", "scope": "pay", "role": "audit"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "division", "kind": "super", "owner": "tester"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "other", "kind": "super", "owner": "tester"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester", "parent": "division"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "mail", "kind": "service", "owner": "tester", "parent": "other"})
+	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "dora", "scope": "division", "role": "admin", "approvalCode": "APR-T1", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "ava", "scope": "ALL", "role": "audit", "approvalCode": "APR-T1", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "sam", "scope": "pay", "role": "audit", "approvalCode": "APR-T1", "owner": "tester"})
 
 	// the console speaks for users; a plain certificate cannot claim a user
 	console := func(user string) *caller { return r.caller(r.adminAddr, "console", user) }
@@ -269,16 +271,16 @@ func TestDelegatedAdministrationThroughTheConsoleProxy(t *testing.T) {
 	if strings.Join(names, ",") != "division,pay" {
 		t.Fatalf("dora sees %v", names)
 	}
-	dora.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "ledger", "kind": "service", "parent": "division"})
-	dora.must(403, "POST", "/admin/v1/groups", map[string]any{"name": "evil", "kind": "service", "parent": "other"})
-	dora.must(403, "POST", "/admin/v1/groups", map[string]any{"name": "sup", "kind": "super"})
-	dora.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "division", "template": "owner"})
-	dora.must(403, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "mail", "template": "owner"})
-	dora.must(403, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "ALL", "template": "owner"})
-	dora.must(403, "POST", "/admin/v1/templates", map[string]any{"name": "t1", "operations": []string{"get"}})
+	dora.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "ledger", "kind": "service", "owner": "tester", "parent": "division"})
+	dora.must(403, "POST", "/admin/v1/groups", map[string]any{"name": "evil", "kind": "service", "owner": "tester", "parent": "other"})
+	dora.must(403, "POST", "/admin/v1/groups", map[string]any{"name": "sup", "kind": "super", "owner": "tester"})
+	dora.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "division", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
+	dora.must(403, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "mail", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
+	dora.must(403, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "ALL", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
+	dora.must(403, "POST", "/admin/v1/templates", map[string]any{"name": "t1", "approvalCode": "APR-T1", "operations": []string{"get"}})
 	dora.must(403, "GET", "/admin/v1/logs/client", nil)
-	dora.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "pavel", "scope": "ledger", "role": "admin"})
-	dora.must(403, "PUT", "/admin/v1/managers", map[string]any{"identity": "pavel", "scope": "other", "role": "admin"})
+	dora.must(200, "PUT", "/admin/v1/managers", map[string]any{"identity": "pavel", "scope": "ledger", "role": "admin", "approvalCode": "APR-T1", "owner": "tester"})
+	dora.must(403, "PUT", "/admin/v1/managers", map[string]any{"identity": "pavel", "scope": "other", "role": "admin", "approvalCode": "APR-T1", "owner": "tester"})
 
 	// keys: created and managed inside the scope only
 	var vs KeyList
@@ -332,11 +334,11 @@ func TestDelegatedAdministrationThroughTheConsoleProxy(t *testing.T) {
 func TestTemplatesEditableThroughTheAPI(t *testing.T) {
 	r := newRig(t)
 	root := r.caller(r.adminAddr, "root", "")
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service"})
-	root.must(201, "POST", "/admin/v1/templates", map[string]any{"name": "rotator", "description": "can rotate", "operations": []string{"locate", "getattributes", "rekey", "get"}})
-	root.must(409, "POST", "/admin/v1/templates", map[string]any{"name": "rotator", "operations": []string{"get"}})
-	root.must(400, "POST", "/admin/v1/templates", map[string]any{"name": "bad", "operations": []string{"fly"}})
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "bot", "group": "pay", "template": "rotator"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester"})
+	root.must(201, "POST", "/admin/v1/templates", map[string]any{"name": "rotator", "description": "can rotate", "approvalCode": "APR-T1", "operations": []string{"locate", "getattributes", "rekey", "get"}})
+	root.must(409, "POST", "/admin/v1/templates", map[string]any{"name": "rotator", "approvalCode": "APR-T1", "operations": []string{"get"}})
+	root.must(400, "POST", "/admin/v1/templates", map[string]any{"name": "bad", "approvalCode": "APR-T1", "operations": []string{"fly"}})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "bot", "group": "pay", "template": "rotator", "approvalCode": "APR-T1", "owner": "tester"})
 	root.must(409, "DELETE", "/admin/v1/templates/rotator", nil)
 	var ts struct {
 		Templates []TemplateJSON `json:"templates"`
@@ -350,7 +352,7 @@ func TestTemplatesEditableThroughTheAPI(t *testing.T) {
 			t.Fatalf("crud summary of %s is %q", x.Name, x.CRUD)
 		}
 	}
-	root.must(200, "PUT", "/admin/v1/templates/rotator", map[string]any{"description": "now without get", "operations": []string{"locate", "getattributes", "rekey"}})
+	root.must(200, "PUT", "/admin/v1/templates/rotator", map[string]any{"description": "now without get", "approvalCode": "APR-T1", "operations": []string{"locate", "getattributes", "rekey"}})
 	var vs KeyList
 	json.Unmarshal(root.must(201, "POST", "/admin/v1/keys", map[string]any{"algorithm": "aes-128", "group": "pay", "activate": true}), &vs)
 	bot := r.caller(r.clientAddr, "bot", "")
@@ -360,7 +362,7 @@ func TestTemplatesEditableThroughTheAPI(t *testing.T) {
 	if rk.Action != "rekey" || rk.Key.State != "active" || rk.Replaced == nil || rk.Replaced.State != "deactivated" || rk.Key.ReplacesID != rk.Replaced.ID {
 		t.Fatalf("rekey answer %+v", rk)
 	}
-	root.must(200, "PUT", "/admin/v1/templates/guest", map[string]any{"description": "edited built-in", "operations": []string{"locate"}})
+	root.must(200, "PUT", "/admin/v1/templates/guest", map[string]any{"description": "edited built-in", "approvalCode": "APR-T1", "operations": []string{"locate"}})
 	root.must(400, "DELETE", "/admin/v1/templates/owner", nil)
 	root.must(200, "DELETE", "/admin/v1/bindings?client=bot&group=pay", nil)
 	root.must(200, "DELETE", "/admin/v1/templates/rotator", nil)
@@ -379,8 +381,8 @@ func contains(l []string, s string) bool {
 func TestErrorsAreStructuredAndMinimalRequestsWork(t *testing.T) {
 	r := newRig(t)
 	root := r.caller(r.adminAddr, "root", "")
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service"})
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
 	app := r.caller(r.clientAddr, "app", "")
 
 	// the minimal create: one field. The only service of the client is used; defaults fill the rest.

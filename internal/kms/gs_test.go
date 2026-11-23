@@ -80,7 +80,7 @@ func TestGS_ConcurrentOperationsAndReload(t *testing.T) {
 	s, dir := topology(t)
 	root := s.AdminPrincipal("root")
 	for _, b := range [][3]string{{"app1", "pay", "owner"}, {"app2", "ledger", "owner"}, {"app3", "division", "guest"}} {
-		if err := s.PutBinding(root, b[0], b[1], b[2]); err != nil {
+		if err := s.PutBinding(root, b[0], b[1], b[2], GrantInfo{Approval: "APR-T1", Owner: "tester"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,12 +110,12 @@ func TestGS_ConcurrentOperationsAndReload(t *testing.T) {
 				}
 				// administration churn at the same time
 				name := fmt.Sprintf("t%d-%d", w, i)
-				if err := s.PutTemplate(root, name, "", []string{"locate", "getattributes"}, true); err == nil {
-					s.PutBinding(root, fmt.Sprintf("c%d", w), svc, name)
+				if err := s.PutTemplate(root, name, "", []string{"locate", "getattributes"}, true, GrantInfo{Approval: "APR-T1", Owner: "tester"}); err == nil {
+					s.PutBinding(root, fmt.Sprintf("c%d", w), svc, name, GrantInfo{Approval: "APR-T1", Owner: "tester"})
 					s.DeleteBinding(root, fmt.Sprintf("c%d", w), svc)
 					s.DeleteTemplate(root, name)
 				}
-				s.PutManager(root, fmt.Sprintf("m%d", w), svc, RoleAudit)
+				s.PutManager(root, fmt.Sprintf("m%d", w), svc, RoleAudit, GrantInfo{Approval: "APR-T1", Owner: "tester"})
 				s.DeleteManager(root, fmt.Sprintf("m%d", w), svc)
 				s.Groups(root)
 				s.Bindings(root)

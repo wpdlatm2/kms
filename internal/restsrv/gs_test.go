@@ -42,8 +42,8 @@ func keyCount(r *rig) int {
 func gsRig(t *testing.T) (*rig, *caller, *caller) {
 	r := newRig(t)
 	root := r.caller(r.adminAddr, "root", "")
-	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service"})
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner"})
+	root.must(201, "POST", "/admin/v1/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester"})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "app", "group": "pay", "template": "owner", "approvalCode": "APR-T1", "owner": "tester"})
 	return r, root, r.caller(r.clientAddr, "app", "")
 }
 
@@ -129,27 +129,27 @@ func TestGS_RESTInputValidation(t *testing.T) {
 	adminBad := []struct {
 		method, path, body string
 	}{
-		{"POST", "/admin/v1/groups", `{"name":"../etc","kind":"service"}`},
-		{"POST", "/admin/v1/groups", `{"name":"a b","kind":"service"}`},
-		{"POST", "/admin/v1/groups", `{"name":"` + long + `","kind":"service"}`},
+		{"POST", "/admin/v1/groups", `{"name":"../etc","kind":"service", "owner": "tester"}`},
+		{"POST", "/admin/v1/groups", `{"name":"a b","kind":"service", "owner": "tester"}`},
+		{"POST", "/admin/v1/groups", `{"name":"` + long + `","kind":"service", "owner": "tester"}`},
 		{"POST", "/admin/v1/groups", `{"name":"ok-name","kind":"galaxy"}`},
-		{"POST", "/admin/v1/groups", `{"name":"ok-name","kind":"service","parent":"nope"}`},
-		{"POST", "/admin/v1/groups", `{"name":"ok-name","kind":"service","description":"` + strings.Repeat("d", 300) + `"}`},
+		{"POST", "/admin/v1/groups", `{"name":"ok-name","kind":"service", "owner": "tester","parent":"nope"}`},
+		{"POST", "/admin/v1/groups", `{"name":"ok-name","kind":"service", "owner": "tester","description":"` + strings.Repeat("d", 300) + `"}`},
 		{"POST", "/admin/v1/groups", "{\"name\":\"ok-name\",\"kind\":\"service\",\"description\":\"x\\ny\"}"},
-		{"POST", "/admin/v1/groups", `{"name":"ALL","kind":"super"}`},
-		{"POST", "/admin/v1/templates", `{"name":"t","operations":[]}`},
-		{"POST", "/admin/v1/templates", `{"name":"t","operations":["fly"]}`},
-		{"POST", "/admin/v1/templates", `{"name":"t t","operations":["get"]}`},
+		{"POST", "/admin/v1/groups", `{"name":"ALL","kind":"super", "owner": "tester"}`},
+		{"POST", "/admin/v1/templates", `{"name":"t","approvalCode":"APR-T1", "operations":[]}`},
+		{"POST", "/admin/v1/templates", `{"name":"t","approvalCode":"APR-T1", "operations":["fly"]}`},
+		{"POST", "/admin/v1/templates", `{"name":"t t","approvalCode":"APR-T1", "operations":["get"]}`},
 		{"POST", "/admin/v1/templates", `{"name":"t","operations":"get"}`},
-		{"PUT", "/admin/v1/bindings", `{"client":"*","group":"pay","template":"owner"}`},
-		{"PUT", "/admin/v1/bindings", `{"client":"","group":"pay","template":"owner"}`},
+		{"PUT", "/admin/v1/bindings", `{"client":"*","group":"pay","template":"owner", "approvalCode": "APR-T1", "owner": "tester"}`},
+		{"PUT", "/admin/v1/bindings", `{"client":"","group":"pay","template":"owner", "approvalCode": "APR-T1", "owner": "tester"}`},
 		{"PUT", "/admin/v1/bindings", "{\"client\":\"a\\u0000b\",\"group\":\"pay\",\"template\":\"owner\"}"},
-		{"PUT", "/admin/v1/bindings", `{"client":"` + long + `","group":"pay","template":"owner"}`},
-		{"PUT", "/admin/v1/bindings", `{"client":"x","group":"nope","template":"owner"}`},
-		{"PUT", "/admin/v1/bindings", `{"client":"x","group":"pay","template":"nope"}`},
+		{"PUT", "/admin/v1/bindings", `{"client":"` + long + `","group":"pay","template":"owner", "approvalCode": "APR-T1", "owner": "tester"}`},
+		{"PUT", "/admin/v1/bindings", `{"client":"x","group":"nope","template":"owner", "approvalCode": "APR-T1", "owner": "tester"}`},
+		{"PUT", "/admin/v1/bindings", `{"client":"x","group":"pay","template":"nope", "approvalCode": "APR-T1", "owner": "tester"}`},
 		{"PUT", "/admin/v1/managers", `{"identity":"x","scope":"pay","role":"root"}`},
-		{"PUT", "/admin/v1/managers", `{"identity":"*","scope":"pay","role":"admin"}`},
-		{"PUT", "/admin/v1/managers", `{"identity":"x","scope":"ghost","role":"admin"}`},
+		{"PUT", "/admin/v1/managers", `{"identity":"*","scope":"pay","role":"admin", "approvalCode": "APR-T1", "owner": "tester"}`},
+		{"PUT", "/admin/v1/managers", `{"identity":"x","scope":"ghost","role":"admin", "approvalCode": "APR-T1", "owner": "tester"}`},
 	}
 	for _, c := range adminBad {
 		code, _, body := root.rawDo(c.method, c.path, []byte(c.body), "application/json")
@@ -251,7 +251,7 @@ func TestGS_RESTNoInformationLeak(t *testing.T) {
 // GS: stability. Many clients changing the same data at once leave a consistent, loadable state.
 func TestGS_ConcurrentLifecycleKeepsInvariants(t *testing.T) {
 	r, root, app := gsRig(t)
-	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "reader", "group": "pay", "template": "guest"})
+	root.must(200, "PUT", "/admin/v1/bindings", map[string]any{"client": "reader", "group": "pay", "template": "guest", "approvalCode": "APR-T1", "owner": "tester"})
 	reader := r.caller(r.clientAddr, "reader", "")
 
 	const workers, rounds = 24, 12

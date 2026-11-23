@@ -45,11 +45,11 @@ func start(t *testing.T) *env {
 			t.Fatal(err)
 		}
 	}
-	must(svc.PutGroup(root, kms.GroupReq{Name: "payments", Kind: kms.KindService}, true))
-	must(svc.PutGroup(root, kms.GroupReq{Name: "billing", Kind: kms.KindService}, true))
-	must(svc.PutBinding(root, "app", "payments", "owner"))
-	must(svc.PutBinding(root, "reader", "payments", "guest"))
-	must(svc.PutBinding(root, "other-app", "billing", "owner"))
+	must(svc.PutGroup(root, kms.GroupReq{Owner: "tester", Name: "payments", Kind: kms.KindService}, true))
+	must(svc.PutGroup(root, kms.GroupReq{Owner: "tester", Name: "billing", Kind: kms.KindService}, true))
+	must(svc.PutBinding(root, "app", "payments", "owner", kms.GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	must(svc.PutBinding(root, "reader", "payments", "guest", kms.GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	must(svc.PutBinding(root, "other-app", "billing", "owner", kms.GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	pki := testpki.New(t)
 	lg, _ := logs.Open("", "client")
 	srv := &Server{Svc: svc, TLS: pki.ServerTLS(), Access: lg}
@@ -220,7 +220,7 @@ func TestPermissionGroupsOverKMIP(t *testing.T) {
 	}
 	// a client bound to two services must say which
 	root := e.svc.AdminPrincipal("root")
-	if err := e.svc.PutBinding(root, "other-app", "payments", "owner"); err != nil {
+	if err := e.svc.PutBinding(root, "other-app", "payments", "owner", kms.GrantInfo{Approval: "APR-T1", Owner: "tester"}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = other.Create(kmip.AlgorithmAttrs(kmip.AlgAES, 128, 0))

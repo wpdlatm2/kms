@@ -1,0 +1,112 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>pqc-kms 기능 범위</title>
+<style>
+@page{size:A4;margin:18mm 16mm}
+body{font:10.5pt/1.6 "Malgun Gothic",system-ui,sans-serif;color:#1c2330}
+h1{font-size:20pt;margin:0 0 4pt}h2{font-size:13.5pt;border-bottom:2px solid #2456d6;padding-bottom:3pt;margin-top:20pt;page-break-after:avoid}h3{font-size:11pt;margin:12pt 0 4pt}
+table{border-collapse:collapse;width:100%;margin:6pt 0;font-size:9.5pt}th,td{border:1px solid #cfd5df;padding:4pt 6pt;vertical-align:top;text-align:left}th{background:#eef2fb}
+.ok{color:#157f3b;font-weight:700}.no{color:#c2261f;font-weight:700}.box{background:#fff7e6;border:1px solid #e3a24a;border-radius:6pt;padding:8pt 10pt;margin:8pt 0}
+code{background:#f1f3f7;padding:0 3pt;border-radius:3pt;font-size:9.5pt}.sub{color:#667085}
+</style></head><body>
+<h1>pqc-kms 기능 범위</h1>
+<div class="sub">KMIP · REST 키 관리 백엔드 + 웹 관리 콘솔 · 2026-11-23 기준 · 배포: 111 서버 (https://192.168.0.111:8443)</div>
+
+<h2>1. 한눈에 보기</h2>
+<table>
+<tr><th style="width:24%">구분</th><th>내용</th></tr>
+<tr><td>역할</td><td><b>키 관리 서버</b>. 키의 생성·보관·수명주기·권한·감사를 담당한다. 키 값은 허가된 클라이언트(KMIP/REST)에게만 전달된다.</td></tr>
+<tr><td>암·복호화·서명</td><td><span class="no">서버가 대행하지 않는다.</span> 암호 연산은 키를 받은 쪽(예: localhsm의 TPM 보호 키스토어)이 수행한다. 이 때문에 연산 용도가 없는 PQC·Edwards·KEM 키도 일반 키와 똑같이 생성·보관·회전·파기할 수 있다.</td></tr>
+<tr><td>프로토콜</td><td>KMIP 1.0 · 1.1 · 1.2 · 1.3 · 1.4 · 2.0 · 2.1 · 3.0 (TTLV, mTLS) / 클라이언트 REST(JSON, mTLS) / 관리 API(별도 포트, mTLS)</td></tr>
+<tr><td>보조 구성요소</td><td>호스트 에이전트 <code>kmsagent</code>(systemd, 서비스 상태·시작/중지)</td></tr>
+<tr><td>포트</td><td>KMIP 5696 · 클라이언트 REST 9998 · 관리 API 9999 (서버 로컬 공개) · 웹 콘솔 8443 (LAN, TLS)</td></tr>
+<tr><td>저장</td><td>AES-256-GCM으로 봉인된 단일 DB. 마스터 키는 localhsm 키스토어로 TPM에 결합(<code>-master-hsm</code>) 또는 파일.</td></tr>
+</table>
+<div class="box"><b>참고(이전 kms 저장소와의 관계)</b> — 이전 <code>wpdlatm2/kms</code>(branch <code>legacy</code>)에는 KMIP 오퍼레이션 코드값(Encrypt·Decrypt·Sign·MAC)과 ARIA·SEED 블록암호 프리미티브는 있었지만, 이 오퍼레이션을 처리하는 서버 구현은 없었다. 따라서 "서버가 암복호화를 제공"한 적은 없고, 현재 pqc-kms도 키 관리 전용이다. 서버측 암복호화가 필요하면 별도 기능으로 추가해야 한다(9절).</div>
+
+<h2>2. KMIP 오퍼레이션</h2>
+<table>
+<tr><th style="width:30%">오퍼레이션</th><th style="width:12%">지원</th><th>비고</th></tr>
+<tr><td>Discover Versions · Query</td><td class="ok">지원</td><td>지원 버전·오퍼레이션·객체 타입 안내</td></tr>
+<tr><td>Create (대칭키)</td><td class="ok">지원</td><td>AES · ARIA · SEED · ChaCha20 · HMAC</td></tr>
+<tr><td>Create Key Pair</td><td class="ok">지원</td><td>RSA · EC · Ed · X · ML-DSA · SLH-DSA · ML-KEM · 하이브리드</td></tr>
+<tr><td>Locate · Get Attributes</td><td class="ok">지원</td><td>이름·상태·알고리즘 등으로 조회. 권한 없는 객체는 "없음"으로 보임</td></tr>
+<tr><td>Get</td><td class="ok">지원</td><td>키 값 반출(권한 필요). 키 래핑(Key Wrapping)은 미지원 — 채널 보호는 mTLS</td></tr>
+<tr><td>Activate · Revoke · Destroy</td><td class="ok">지원</td><td>KMIP 상태 모델(Pre-Active → Active → Deactivated → Compromised → Destroyed)</td></tr>
+<tr><td>Re-Key</td><td class="ok">지원</td><td>같은 이름의 새 객체 생성 + 이전 객체 Deactivate (localhsm 동기화 시 무중단 회전)</td></tr>
+<tr><td>Add / Delete Attribute</td><td class="ok">부분</td><td>Name 속성만</td></tr>
+<tr><td>Register · Import / Export</td><td class="no">미지원</td><td>키는 서버에서 생성한 것만 관리</td></tr>
+<tr><td>Encrypt · Decrypt · Sign · Signature Verify · MAC · Hash · RNG</td><td class="no">미지원</td><td>서버 암호 연산 없음 (1절)</td></tr>
+<tr><td>Wrap/Unwrap(Get with wrapping) · Derive Key · Certify</td><td class="no">미지원</td><td></td></tr>
+</table>
+
+<h2>3. 클라이언트 REST API</h2>
+<p>KMIP와 같은 수명주기를 제공하되 KMIP 데이터형을 쓰지 않고 보편값(소문자 상태, RFC 3339 시각, 표준 알고리즘명, hex 키값)을 쓴다. 요청은 최소한만, 응답은 가능한 많이 돌려준다.</p>
+<table>
+<tr><th style="width:36%">엔드포인트</th><th>기능</th></tr>
+<tr><td><code>GET /v1/catalog</code></td><td>생성 가능한 알고리즘 목록(표준·길이·용도)</td></tr>
+<tr><td><code>GET /v1/keys</code> · <code>GET /v1/keys/{id}</code></td><td>목록(이름 등으로 필터) · 메타데이터</td></tr>
+<tr><td><code>GET /v1/keys/{id}/value</code></td><td>키 값(권한 필요)</td></tr>
+<tr><td><code>POST /v1/keys</code></td><td>키 생성(알고리즘·그룹·이름·즉시 활성)</td></tr>
+<tr><td><code>POST /v1/keys/{id}/{activate|deactivate|compromise|rekey|destroy}</code></td><td>수명주기 동작</td></tr>
+</table>
+
+<h2>4. 생성 가능한 알고리즘 (41종)</h2>
+<table>
+<tr><th style="width:20%">분류</th><th>알고리즘</th><th style="width:22%">표준</th></tr>
+<tr><td>대칭키</td><td>AES-128/192/256 · ARIA-128/192/256 · SEED-128 · ChaCha20-256 · HMAC-SHA256/384/512</td><td>FIPS 197 · RFC 5794 · RFC 4269 · RFC 8439 · FIPS 198-1</td></tr>
+<tr><td>RSA</td><td>RSA-2048/3072/4096</td><td>RFC 8017</td></tr>
+<tr><td>타원곡선</td><td>P-224 · P-256 · P-384 · P-521 · Ed25519 · Ed448 · X25519 · X448</td><td>FIPS 186-5 · RFC 8032 · RFC 7748</td></tr>
+<tr><td>PQC 서명</td><td>ML-DSA-44/65/87 · SLH-DSA(SHA2/SHAKE × 128/192/256 × f/s, 12종)</td><td>FIPS 204 · FIPS 205</td></tr>
+<tr><td>PQC KEM</td><td>ML-KEM-512/768/1024 · X-Wing · X25519MLKEM768</td><td>FIPS 203 · IETF draft</td></tr>
+</table>
+
+<h2>5. 권한 모델</h2>
+<ul>
+<li>모든 키는 <b>서비스(권한그룹)</b>에 필수 소속. 서비스를 묶는 <b>상위그룹</b>, 그룹과 무관하게 모든 키에 적용되는 <b>ALL</b>이 있다.</li>
+<li>클라이언트는 인증서 CN으로 식별되어 그룹에 <b>권한 템플릿</b>(owner = CRUD, guest = 읽기, 사용자 정의 가능)으로 매핑된다. 템플릿은 오퍼레이션(create·locate·getattributes·get·activate·revoke·rekey·setattribute·destroy)을 골라 만들고 수정한다.</li>
+<li>관리 권한(admin/audit)은 ALL·상위그룹·서비스 범위로 위임한다. audit은 읽기 전용이며 관리 API에서도 <b>키 값은 나오지 않는다</b>.</li>
+<li>모든 권한 부여·변경에 <b>승인번호</b>와 <b>담당자</b>가 필수이다.</li>
+</ul>
+
+<h2>6-1. 대시보드·서비스 제어</h2>
+<ul>
+<li><b>대시보드</b>: 키 서버 가동·보호 방식·키 상태 분포, KMIP/REST/관리 API 포트 응답과 서버 인증서 만료일, 감사로그 해시 체인 무결성(client·admin·console), 컨테이너 상태(실행·healthy·재시작 횟수), 호스트 디스크·메모리·부하, 24시간 로그인 성공/실패/잠금 계정. 종합 판정 <b>정상/주의/위험</b>과 사유 목록, 15초 자동 갱신.</li>
+<li><b>시작·중지·재기동</b>: 전체 관리자(admin)만. 승인번호·담당자·서비스 이름 입력 확인 필수, 요청과 결과가 감사 기록에 남는다. 콘솔은 Docker 권한이 없고 호스트 에이전트(<code>kmsagent</code>, systemd, Unix 소켓)가 고정 목록(kms·console)의 start/stop/restart만 수행한다. 감사 권한자는 조회만 가능.</li>
+</ul>
+<h2>6-3. 시스템 로그와 자가점검</h2>
+<ul>
+<li>기동·종료·오류·서비스 제어·감사로그 무결성 점검·관리 이벤트를 호스트 <b>시스템 로그(syslog/journald)</b>에 기록(<code>journalctl -t kmsd -t kmsadmin -t kmsagent</code>). 감사 파일과 별개이며 <code>docker logs</code>에도 유지.</li>
+<li><b>자가점검</b>(기본 5분): 권한 없는 전용 인증서로 KMIP(버전 협상·Query·Locate)·클라이언트 REST·관리 API·마스터 키(TPM 봉인/해제 왕복)·저장소·데이터 폴더 쓰기를 점검해 한 줄로 기록. 실패 ERR, 복구 NOTICE, 실패·복구는 감사 기록과 대시보드에도 반영.</li>
+</ul>
+<h2>6-2. 계정·보안 설정</h2>
+<ul>
+<li><b>비밀번호 규칙</b>(설정 가능): 최소 길이 8–64, 문자 종류 1–4종, 계정 이름 포함 금지, 같은 문자 3회 연속 금지, 이전 비밀번호 재사용 금지(0–10회), 유효 기간(0–365일)과 만료 예고, 관리자가 설정한 비밀번호는 첫 로그인에서 변경.</li>
+<li><b>로그인 실패 잠금</b>(설정 가능): 실패 횟수 3–10, 집계 시간 1–60분, 잠금 시간 0–1440분(0 = 관리자가 풀 때까지). 사용자 존재 여부를 노출하지 않는 동일한 응답.</li>
+<li><b>세션</b>: 최대 1–24시간, 미사용 5–240분. 비밀번호 변경·재설정 시 해당 사용자의 다른 세션 종료.</li>
+<li><b>계정 관리</b>: 추가·비밀번호 재설정·잠금 해제·OTP 초기화(승인번호·담당자 필수), 변경 전·후 설정값 감사 기록. 로그인 성공/실패·잠금 등 인증 이벤트는 사유·IP·브라우저·세션 식별자와 함께 기록(비밀번호 제외).</li>
+</ul>
+<h2>6. 웹 관리 콘솔</h2>
+<p>키(필터·검색·생성·상세·수명주기 동작) · 서비스·그룹 트리 · 권한 템플릿 편집 · 클라이언트 매핑 · 관리자 위임 · 감사·로그 · 라이프사이클 도움말. 로그인은 비밀번호 + <b>OTP(TOTP, RFC 6238)</b>이며 Android·iOS 무료 인증 앱을 쓴다. 복구 코드 10개(1회용). 세션·CSRF·실패 횟수 제한 적용.</p>
+
+<h2>7. 감사·증적 (금융감독규정 · ISMS-P)</h2>
+<ul>
+<li>클라이언트 / 관리 API / 콘솔 로그를 <b>분리</b>하여 기록. 항목에 순번·분류·결과·요청ID·승인번호·담당자 포함.</li>
+<li>SHA-256 <b>해시 체인 + HMAC</b>(TPM 봉인 키)로 변조·삭제·삽입 탐지, 일 단위 파일, 보관기간 하한(기본 5년), 무결성 검증, 증적 ZIP 내보내기(매니페스트), 정기 검토 기록, syslog(TLS) 외부 전송.</li>
+<li>로그인 실패·TLS 인증서 실패·권한 거부·키 값 반출·감사로그 조회까지 기록. 상세와 한계는 <code>docs/AUDIT_COMPLIANCE.md</code>.</li>
+</ul>
+
+<h2>8. 검증 현황</h2>
+<ul>
+<li>단위·통합 테스트(권한 모델, 암호화 저장소, KMIP 전 버전, REST, 콘솔·OTP RFC 벡터, 감사 체인 변조 탐지), 퍼징·race(Linux Docker), 독립 구현체 PyKMIP로 KMIP 1.0/1.2/1.4 확인.</li>
+<li>111 서버(TPM)에서 localhsm 연계 통합테스트 <b>0 failure</b>: 매핑 → KMIP 조회·동기화 → 회전(무중단) → 침해·비활성 → 템플릿 수정 → REST → 감사 증적.</li>
+<li>GS 인증 관점 입력값 검증·안정성 점검 결과는 <code>docs/GS_TEST_REPORT.md</code> (자체 점검이며 인증 결과가 아님).</li>
+</ul>
+
+<h2>9. 미지원·계획</h2>
+<table>
+<tr><th style="width:30%">항목</th><th>상태</th></tr>
+<tr><td>서버측 암·복호화·서명(KMIP Encrypt/Decrypt/Sign/MAC, REST <code>/encrypt</code> 등)</td><td>미구현 — 필요 시 추가 개발. 이 경우 키가 서버 프로세스 메모리에서 쓰이므로 TPM 결합·감사 설계를 함께 정해야 한다.</td></tr>
+<tr><td>Raft 다중 노드(HA)</td><td>미구현 — 저장소에 복제 훅만 있음. 방향: 클러스터 키를 노드별 TPM으로 봉인.</td></tr>
+<tr><td>키 Register/Import, 키 래핑</td><td>미구현</td></tr>
+<tr><td>콘솔 로그 MAC 키의 TPM 봉인</td><td>현재 파일(0600)</td></tr>
+</table>
+</body></html>

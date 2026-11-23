@@ -8,3 +8,6 @@ users.json
 audit.jsonl
 deploy/kmsadmin
 deploy/kmsd
+deploy/kmsagent
+dev/run*/
+dev/*.sh

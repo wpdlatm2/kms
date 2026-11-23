@@ -41,7 +41,7 @@ func newStackOpts(t *testing.T, users map[string]string, opts Options) *stack {
 	al, _ := logs.Open("", "admin")
 	cl, _ := logs.Open("", "client")
 	svc.Audit = func(ev kms.AuditEvent) {
-		e := logs.Entry{Plane: string(ev.Plane), Kind: "event", Who: ev.Who, Op: ev.Op, Target: ev.Target, Detail: ev.Detail, Result: ev.Result}
+		e := logs.Entry{Plane: string(ev.Plane), Kind: "event", Who: ev.Who, Op: ev.Op, Target: ev.Target, Detail: ev.Detail, Result: ev.Result, Approval: ev.Approval, Owner: ev.Owner}
 		if ev.Plane == kms.PlaneAdmin {
 			al.Add(e)
 		} else {
@@ -112,9 +112,9 @@ func (c *web) call(method, path string, body any, csrf bool) (int, []byte) {
 func (c *web) login(user, pw string) int {
 	code, raw := c.call("POST", "/api/login", map[string]string{"user": user, "password": pw}, false)
 	if code == 200 {
-		var m map[string]string
+		var m map[string]any
 		json.Unmarshal(raw, &m)
-		c.csrf = m["csrf"]
+		c.csrf, _ = m["csrf"].(string)
 	}
 	return code
 }
@@ -150,7 +150,7 @@ func TestConsoleSessionAndForwarding(t *testing.T) {
 		}
 	}
 	// CSRF
-	if code, _ := root.call("POST", "/api/groups", map[string]any{"name": "x", "kind": "super"}, false); code != 403 {
+	if code, _ := root.call("POST", "/api/groups", map[string]any{"name": "x", "kind": "super", "owner": "tester"}, false); code != 403 {
 		t.Fatalf("no CSRF token = %d", code)
 	}
 	// only the allow-listed API is reachable
@@ -158,11 +158,11 @@ func TestConsoleSessionAndForwarding(t *testing.T) {
 	root.must(404, "GET", "/api/..%2f..%2fconfig", nil)
 
 	// root sets up the structure through the console; the backend sees the real user
-	root.must(201, "POST", "/api/groups", map[string]any{"name": "division", "kind": "super"})
-	root.must(201, "POST", "/api/groups", map[string]any{"name": "pay", "kind": "service", "parent": "division"})
-	root.must(201, "POST", "/api/groups", map[string]any{"name": "mail", "kind": "service"})
-	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "dora", "scope": "division", "role": "admin"})
-	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "ava", "scope": "ALL", "role": "audit"})
+	root.must(201, "POST", "/api/groups", map[string]any{"name": "division", "kind": "super", "owner": "tester"})
+	root.must(201, "POST", "/api/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester", "parent": "division"})
+	root.must(201, "POST", "/api/groups", map[string]any{"name": "mail", "kind": "service", "owner": "tester"})
+	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "dora", "scope": "division", "role": "admin", "approvalCode": "APR-T1", "owner": "tester"})
+	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "ava", "scope": "ALL", "role": "audit", "approvalCode": "APR-T1", "owner": "tester"})
 
 	var me map[string]any
 	json.Unmarshal(dora.must(200, "GET", "/api/me", nil), &me)
@@ -193,7 +193,7 @@ func TestConsoleSessionAndForwarding(t *testing.T) {
 	if len(cat.Algorithms) < 40 {
 		t.Fatalf("catalog has %d algorithms", len(cat.Algorithms))
 	}
-	dora.must(403, "POST", "/api/templates", map[string]any{"name": "t", "operations": []string{"get"}})
+	dora.must(403, "POST", "/api/templates", map[string]any{"name": "t", "approvalCode": "APR-T1", "operations": []string{"get"}})
 	dora.must(403, "GET", "/api/logs/admin", nil)
 	dora.must(403, "GET", "/api/logs/console", nil)
 
@@ -209,7 +209,7 @@ func TestConsoleSessionAndForwarding(t *testing.T) {
 	}
 	sawFail, sawLogin := false, false
 	for _, e := range cl {
-		sawFail = sawFail || strings.HasPrefix(e.Result, "error: bad credentials")
+		sawFail = sawFail || (e.Op == "login-failed" && e.Outcome == logs.OutcomeFailure && strings.HasPrefix(e.Result, "error: bad password"))
 		sawLogin = sawLogin || (e.Op == "login" && e.Who == "dora" && e.Result == "ok")
 	}
 	if !sawFail || !sawLogin {

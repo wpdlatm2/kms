@@ -12,9 +12,12 @@ package restsrv
 import (
 	"crypto/tls"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wpdlatm2/kms/internal/kms"
@@ -23,6 +26,11 @@ import (
 
 // Serve runs an HTTPS server that requires client certificates.
 func Serve(addr string, cfg *tls.Config, h http.Handler) (*http.Server, net.Listener, error) {
+	return ServeAudited(addr, cfg, h, nil)
+}
+
+// ServeAudited is Serve with a hook that receives every failed TLS handshake (source address and reason).
+func ServeAudited(addr string, cfg *tls.Config, h http.Handler, onHandshakeFail func(remote, reason string)) (*http.Server, net.Listener, error) {
 	if cfg == nil || cfg.ClientAuth != tls.RequireAndVerifyClientCert {
 		return nil, nil, errors.New("restsrv: TLS with required client certificates is mandatory")
 	}
@@ -31,6 +39,11 @@ func Serve(addr string, cfg *tls.Config, h http.Handler) (*http.Server, net.List
 		return nil, nil, err
 	}
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute}
+	if onHandshakeFail != nil {
+		srv.ErrorLog = log.New(handshakeWriter(onHandshakeFail), "", 0)
+	} else {
+		srv.ErrorLog = log.New(io.Discard, "", 0)
+	}
 	go srv.Serve(ln)
 	return srv, ln, nil
 }
@@ -175,4 +188,28 @@ func (c *Client) act(w http.ResponseWriter, r *http.Request, p kms.Principal) {
 		return
 	}
 	writeJSON(w, 200, out)
+}
+
+// handshakeWriter turns the http.Server error log lines "http: TLS handshake error from IP:port: reason" into hook calls.
+type handshakeWriter func(remote, reason string)
+
+func (f handshakeWriter) Write(b []byte) (int, error) {
+	line := strings.TrimSpace(string(b))
+	if i := strings.Index(line, "TLS handshake error from "); i >= 0 {
+		rest := line[i+len("TLS handshake error from "):]
+		remote, reason, _ := strings.Cut(rest, ": ")
+		if h, _, err := net.SplitHostPort(remote); err == nil {
+			remote = h
+		}
+		if len(reason) > 160 {
+			reason = reason[:160]
+		}
+		f(remote, strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return ' '
+			}
+			return r
+		}, reason))
+	}
+	return len(b), nil
 }

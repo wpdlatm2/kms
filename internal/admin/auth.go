@@ -32,6 +32,16 @@ type User struct {
 	Salt string   `json:"salt"`
 	Hash string   `json:"hash"`
 	Iter int      `json:"iter"`
+	// password management
+	Created     int64    `json:"created,omitempty"`
+	PwChanged   int64    `json:"pwChanged,omitempty"`
+	History     []PwHist `json:"history,omitempty"`
+	MustChange  bool     `json:"mustChange,omitempty"`
+	Fails       []int64  `json:"fails,omitempty"`
+	LockedUntil int64    `json:"lockedUntil,omitempty"`
+	Locked      bool     `json:"locked,omitempty"` // locked until an administrator unlocks
+	LastLogin   int64    `json:"lastLogin,omitempty"`
+	LastIP      string   `json:"lastIp,omitempty"`
 }
 
 // Users is the account file (PBKDF2-HMAC-SHA256 hashed passwords).
@@ -82,11 +92,11 @@ func (u *Users) Set(name, password string) error {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	var keepOTP *UserOTP
+	now := time.Now().Unix()
+	nu := User{Name: name, Salt: base64.StdEncoding.EncodeToString(salt), Hash: h, Iter: pbkdfIter, Created: now, PwChanged: now}
 	if ex := u.find(name); ex != nil {
-		keepOTP = ex.OTP
+		nu.OTP, nu.Created, nu.History = ex.OTP, ex.Created, ex.History
 	}
-	nu := User{OTP: keepOTP, Name: name, Salt: base64.StdEncoding.EncodeToString(salt), Hash: h, Iter: pbkdfIter}
 	replaced := false
 	for i := range u.List {
 		if u.List[i].Name == name {
@@ -140,6 +150,7 @@ type session struct {
 	User       string
 	CSRF       string
 	EnrollOnly bool   // password accepted, but the second factor must be enrolled before anything else
+	ChangeOnly bool   // the password must be changed before anything else (expired or set by an administrator)
 	Pending    string // secret shown during enrollment, not yet confirmed
 	Expires    time.Time
 	Idle       time.Time
@@ -332,5 +343,43 @@ func (s *sessions) setPending(ss *session, secret string) {
 func (s *sessions) finishEnroll(ss *session) {
 	s.mu.Lock()
 	ss.Pending, ss.EnrollOnly = "", false
+	s.mu.Unlock()
+}
+
+// count is the number of live sessions.
+func (s *sessions) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, now := 0, time.Now()
+	for _, ss := range s.m {
+		if now.Before(ss.Expires) && now.Before(ss.Idle) {
+			n++
+		}
+	}
+	return n
+}
+
+// dropUser ends every session of a user except the one with the token keep.
+func (s *sessions) dropUser(user, keep string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, ss := range s.m {
+		if ss.User == user && tok != keep {
+			delete(s.m, tok)
+		}
+	}
+}
+
+// finishChange lifts the "change the password first" restriction of a session.
+func (s *sessions) finishChange(ss *session) {
+	s.mu.Lock()
+	ss.ChangeOnly = false
+	s.mu.Unlock()
+}
+
+// setLimits applies new session limits to sessions created from now on and to the idle check of live ones.
+func (s *sessions) setLimits(ttl, idle time.Duration) {
+	s.mu.Lock()
+	s.ttl, s.idle = ttl, idle
 	s.mu.Unlock()
 }

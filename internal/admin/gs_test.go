@@ -143,7 +143,7 @@ func TestGS_ConsoleInputValidation(t *testing.T) {
 		"html":  []byte(`{"user":"<script>alert(1)</script>","password":"x"}`),
 		"nul":   []byte("{\"user\":\"alice\\u0000\",\"password\":\"x\"}"),
 		"types": []byte(`{"user":123,"password":["x"]}`), "badutf8": []byte("{\"user\":\"a\xff\",\"password\":\"x\"}"),
-		"missing": []byte(`{}`), "extra": []byte(`{"user":"alice","password":"x","role":"admin"}`),
+		"missing": []byte(`{}`), "extra": []byte(`{"user":"alice","password":"x","role":"admin", "approvalCode": "APR-T1", "owner": "tester"}`),
 	}
 	for name, body := range bodies {
 		resp, out := postJSON(t, s.console.URL, "/api/login", body, nil)
@@ -180,8 +180,8 @@ func TestGS_ConsoleForwardingBoundaries(t *testing.T) {
 	s := newStack(t, map[string]string{"root": pw, "dora": pw})
 	root, dora := s.web(), s.web()
 	root.login("root", pw)
-	root.must(201, "POST", "/api/groups", map[string]any{"name": "pay", "kind": "service"})
-	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "dora", "scope": "pay", "role": "admin"})
+	root.must(201, "POST", "/api/groups", map[string]any{"name": "pay", "kind": "service", "owner": "tester"})
+	root.must(200, "PUT", "/api/managers", map[string]any{"identity": "dora", "scope": "pay", "role": "admin", "approvalCode": "APR-T1", "owner": "tester"})
 	dora.login("dora", pw)
 
 	// a client-supplied identity header never reaches the backend: dora stays dora
@@ -225,7 +225,7 @@ func TestGS_ConsoleForwardingBoundaries(t *testing.T) {
 		}
 	}
 	// body limit and CSRF/Origin
-	big := map[string]any{"name": "x", "kind": "service", "description": strings.Repeat("d", 100000)}
+	big := map[string]any{"name": "x", "kind": "service", "owner": "tester", "description": strings.Repeat("d", 100000)}
 	if code, _ := dora.call("POST", "/api/groups", big, true); code < 400 || code >= 500 {
 		t.Fatalf("an oversized body gave %d", code)
 	}

@@ -157,6 +157,7 @@ type Group struct {
 	Kind        string `json:"kind"`
 	Parent      string `json:"parent,omitempty"`
 	Description string `json:"description"`
+	Owner       string `json:"owner,omitempty"` // the person responsible for the service / super group (담당자)
 	Builtin     bool   `json:"builtin,omitempty"`
 	Created     int64  `json:"created"`
 }
@@ -164,9 +165,13 @@ type Group struct {
 // Manager gives an administration identity management rights over a scope: a service, a super group (all of
 // its services) or ALL. Role admin manages, role audit only reads.
 type Manager struct {
-	Identity string `json:"identity"`
-	Scope    string `json:"scope"`
-	Role     string `json:"role"`
+	Identity  string `json:"identity"`
+	Scope     string `json:"scope"`
+	Role      string `json:"role"`
+	Approval  string `json:"approval,omitempty"`  // approval number the grant was made under (승인번호)
+	Owner     string `json:"owner,omitempty"`     // the person responsible for this grant (담당자)
+	GrantedBy string `json:"grantedBy,omitempty"` // who made the grant in the system
+	GrantedAt int64  `json:"grantedAt,omitempty"`
 }
 
 const (
@@ -180,13 +185,20 @@ type Template struct {
 	Description string   `json:"description"`
 	Operations  []string `json:"operations"`
 	Builtin     bool     `json:"builtin,omitempty"`
+	Approval    string   `json:"approval,omitempty"` // approval number of the latest change
+	ChangedBy   string   `json:"changedBy,omitempty"`
+	ChangedAt   int64    `json:"changedAt,omitempty"`
 }
 
 // Binding gives a client (certificate CN) a template's operations in a group.
 type Binding struct {
-	Client   string `json:"client"`
-	Group    string `json:"group"`
-	Template string `json:"template"`
+	Client    string `json:"client"`
+	Group     string `json:"group"`
+	Template  string `json:"template"`
+	Approval  string `json:"approval,omitempty"`  // approval number the grant was made under (승인번호)
+	Owner     string `json:"owner,omitempty"`     // the person responsible for the client / this grant (담당자)
+	GrantedBy string `json:"grantedBy,omitempty"` // who made the grant in the system
+	GrantedAt int64  `json:"grantedAt,omitempty"`
 }
 
 // ErrCode classifies service errors for the front ends.
@@ -242,6 +254,7 @@ type Principal struct {
 type AuditEvent struct {
 	Plane                           Plane
 	Who, Op, Target, Detail, Result string
+	Approval, Owner                 string // evidence of an approved grant: approval number and responsible person
 }
 
 // Service implements the key management operations.
@@ -285,6 +298,18 @@ func (s *Service) emit(p Principal, op, target, detail string, err error) {
 		res = "error: " + err.Error()
 	}
 	s.Audit(AuditEvent{Plane: p.Plane, Who: p.Name, Op: op, Target: target, Detail: detail, Result: res})
+}
+
+// emitG is emit for permission changes: it also records the approval number and the responsible person.
+func (s *Service) emitG(p Principal, op, target, detail string, gi GrantInfo, err error) {
+	if s.Audit == nil {
+		return
+	}
+	res := "ok"
+	if err != nil {
+		res = "error: " + err.Error()
+	}
+	s.Audit(AuditEvent{Plane: p.Plane, Who: p.Name, Op: op, Target: target, Detail: detail, Result: res, Approval: gi.Approval, Owner: gi.Owner})
 }
 
 func newID() string {

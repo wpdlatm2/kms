@@ -217,8 +217,50 @@ func (s *Service) Groups(p Principal) ([]GroupInfo, error) {
 	return out, nil
 }
 
+// GrantInfo is the evidence that accompanies every permission change: the approval number the change was
+// authorised under (승인번호) and the person responsible (담당자).
+type GrantInfo struct {
+	Approval string `json:"approvalCode"`
+	Owner    string `json:"owner"`
+}
+
+// ValidApproval reports whether s is an acceptable approval number.
+func ValidApproval(s string) bool { return approvalRe.MatchString(s) }
+
+var approvalRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/#-]{0,63}$`)
+
+// ValidOwner reports whether o is an acceptable responsible-person field.
+func ValidOwner(o string) bool { return validOwner(o) }
+
+func validOwner(o string) bool {
+	return o != "" && len(o) <= 64 && !badText(o)
+}
+
+// validate checks the evidence fields. A grant needs both; a template change only the approval number.
+func (g *GrantInfo) validate(needOwner bool) *Error {
+	g.Approval, g.Owner = strings.TrimSpace(g.Approval), strings.TrimSpace(g.Owner)
+	if !approvalRe.MatchString(g.Approval) {
+		return errf(ErrInvalid, "approval number (승인번호) is required: 1-64 letters, digits, dot, underscore, slash, hash or hyphen")
+	}
+	if needOwner && !validOwner(g.Owner) {
+		return errf(ErrInvalid, "owner (담당자) is required: the person responsible, at most 64 characters")
+	}
+	if !needOwner && g.Owner != "" && !validOwner(g.Owner) {
+		return errf(ErrInvalid, "invalid owner (담당자)")
+	}
+	return nil
+}
+
+func optGrant(gi []GrantInfo) GrantInfo {
+	if len(gi) > 0 {
+		return gi[0]
+	}
+	return GrantInfo{}
+}
+
 // GroupReq creates or updates a group.
 type GroupReq struct {
+	Owner       string // the person responsible for the service / super group (required when created)
 	Name        string
 	Kind        string // service | super (create only)
 	Parent      string // for a service: its super group ("" = none)
@@ -231,7 +273,9 @@ type GroupReq struct {
 //   - a service without a super group is managed by a global administrator;
 //   - moving a service needs authority over both the old and the new super group.
 func (s *Service) PutGroup(p Principal, r GroupReq, create bool) (err error) {
-	defer func() { s.emit(p, "group-put", r.Name, r.Kind+" parent="+r.Parent+" "+r.Description, err) }()
+	defer func() {
+		s.emitG(p, "group-put", r.Name, r.Kind+" parent="+r.Parent+" "+r.Description, GrantInfo{Owner: r.Owner}, err)
+	}()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -244,6 +288,11 @@ func (s *Service) PutGroup(p Principal, r GroupReq, create bool) (err error) {
 	if len(r.Description) > 256 || badText(r.Description) {
 		return errf(ErrInvalid, "description is too long")
 	}
+	owner := strings.TrimSpace(r.Owner)
+	if (create && owner == "") || (owner != "" && !validOwner(owner)) {
+		return errf(ErrInvalid, "owner (담당자) is required: the person responsible for the group, at most 64 characters")
+	}
+	r.Owner = owner
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
 	g := s.st.groups[r.Name]
@@ -256,12 +305,12 @@ func (s *Service) PutGroup(p Principal, r GroupReq, create bool) (err error) {
 			if !isGlobal(p, true) {
 				return errf(ErrDenied, "only a global administrator creates super groups")
 			}
-			s.st.groups[r.Name] = &Group{Name: r.Name, Kind: KindSuper, Description: r.Description, Created: now()}
+			s.st.groups[r.Name] = &Group{Name: r.Name, Kind: KindSuper, Description: r.Description, Owner: owner, Created: now()}
 		case KindService:
 			if e := s.checkParent(p, "", r.Parent, false); e != nil {
 				return e
 			}
-			s.st.groups[r.Name] = &Group{Name: r.Name, Kind: KindService, Parent: r.Parent, Description: r.Description, Created: now()}
+			s.st.groups[r.Name] = &Group{Name: r.Name, Kind: KindService, Parent: r.Parent, Description: r.Description, Owner: owner, Created: now()}
 		default:
 			return errf(ErrInvalid, "kind must be service or super")
 		}
@@ -277,11 +326,17 @@ func (s *Service) PutGroup(p Principal, r GroupReq, create bool) (err error) {
 			return errf(ErrDenied, "no management right over %q", g.Name)
 		}
 		g.Description = r.Description
+		if owner != "" {
+			g.Owner = owner
+		}
 	case KindService:
 		if e := s.checkParent(p, g.Parent, r.Parent, true); e != nil {
 			return e
 		}
 		g.Description, g.Parent = r.Description, r.Parent
+		if owner != "" {
+			g.Owner = owner
+		}
 	}
 	return s.persist(func() { *g = old })
 }
@@ -311,8 +366,8 @@ func (s *Service) checkParent(p Principal, oldParent, newParent string, existing
 	return nil
 }
 
-func (s *Service) DeleteGroup(p Principal, name string) (err error) {
-	defer func() { s.emit(p, "group-delete", name, "", err) }()
+func (s *Service) DeleteGroup(p Principal, name string, gi ...GrantInfo) (err error) {
+	defer func() { s.emitG(p, "group-delete", name, "", optGrant(gi), err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -378,13 +433,17 @@ func (s *Service) Templates(p Principal) ([]Template, error) {
 
 // PutTemplate creates (create=true) or updates a template (global administrators only: templates are shared
 // by every group). Built-in templates (owner, guest) may be edited but not deleted.
-func (s *Service) PutTemplate(p Principal, name, description string, ops []string, create bool) (err error) {
-	defer func() { s.emit(p, "template-put", name, strings.Join(ops, ","), err) }()
+func (s *Service) PutTemplate(p Principal, name, description string, ops []string, create bool, gi GrantInfo) (err error) {
+	detail := strings.Join(ops, ",")
+	defer func() { s.emitG(p, "template-put", name, detail, gi, err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
 	if !isGlobal(p, true) {
 		return errf(ErrDenied, "templates are shared by all groups: only a global administrator edits them")
+	}
+	if e := gi.validate(false); e != nil {
+		return e
 	}
 	if !nameRe.MatchString(name) {
 		return errf(ErrInvalid, "template name: 1-64 letters, digits, dot, underscore or hyphen")
@@ -413,19 +472,21 @@ func (s *Service) PutTemplate(p Principal, name, description string, ops []strin
 		if t != nil {
 			return errf(ErrConflict, "template %q exists", name)
 		}
-		s.st.templates[name] = &Template{Name: name, Description: description, Operations: clean}
+		s.st.templates[name] = &Template{Name: name, Description: description, Operations: clean, Approval: gi.Approval, ChangedBy: p.Name, ChangedAt: now()}
 		return s.persist(func() { delete(s.st.templates, name) })
 	}
 	if t == nil {
 		return errf(ErrNotFound, "no such template")
 	}
 	old := *t
+	detail = "before=" + strings.Join(old.Operations, ",") + " (approval " + old.Approval + ") after=" + strings.Join(clean, ",")
 	t.Description, t.Operations = description, clean
+	t.Approval, t.ChangedBy, t.ChangedAt = gi.Approval, p.Name, now()
 	return s.persist(func() { *t = old })
 }
 
-func (s *Service) DeleteTemplate(p Principal, name string) (err error) {
-	defer func() { s.emit(p, "template-delete", name, "", err) }()
+func (s *Service) DeleteTemplate(p Principal, name string, gi ...GrantInfo) (err error) {
+	defer func() { s.emitG(p, "template-delete", name, "", optGrant(gi), err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -475,8 +536,9 @@ func (s *Service) Bindings(p Principal) ([]Binding, error) {
 // PutBinding maps a client to a template in a group (replacing the client's earlier mapping for that group).
 // The group may be a service, a super group (all its services) or ALL (everything). It needs management
 // authority over that group.
-func (s *Service) PutBinding(p Principal, client, group, template string) (err error) {
-	defer func() { s.emit(p, "binding-put", client, group+" -> "+template, err) }()
+func (s *Service) PutBinding(p Principal, client, group, template string, gi GrantInfo) (err error) {
+	detail := group + " -> " + template
+	defer func() { s.emitG(p, "binding-put", client, detail, gi, err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -486,6 +548,9 @@ func (s *Service) PutBinding(p Principal, client, group, template string) (err e
 	client = strings.TrimSpace(client)
 	if badIdent(client) {
 		return errf(ErrInvalid, "client must be a certificate common name (no wildcard)")
+	}
+	if e := gi.validate(true); e != nil {
+		return e
 	}
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
@@ -501,18 +566,21 @@ func (s *Service) PutBinding(p Principal, client, group, template string) (err e
 	old := slices.Clone(s.st.bindings)
 	replaced := false
 	for i := range s.st.bindings {
-		if s.st.bindings[i].Client == client && s.st.bindings[i].Group == group {
-			s.st.bindings[i].Template, replaced = template, true
+		if b := &s.st.bindings[i]; b.Client == client && b.Group == group {
+			detail = group + ": " + b.Template + " (approval " + b.Approval + ", owner " + b.Owner + ") -> " + template
+			b.Template, b.Approval, b.Owner, b.GrantedBy, b.GrantedAt = template, gi.Approval, gi.Owner, p.Name, now()
+			replaced = true
 		}
 	}
 	if !replaced {
-		s.st.bindings = append(s.st.bindings, Binding{Client: client, Group: group, Template: template})
+		s.st.bindings = append(s.st.bindings, Binding{Client: client, Group: group, Template: template, Approval: gi.Approval, Owner: gi.Owner, GrantedBy: p.Name, GrantedAt: now()})
 	}
 	return s.persist(func() { s.st.bindings = old })
 }
 
-func (s *Service) DeleteBinding(p Principal, client, group string) (err error) {
-	defer func() { s.emit(p, "binding-delete", client, group, err) }()
+func (s *Service) DeleteBinding(p Principal, client, group string, gi ...GrantInfo) (err error) {
+	detail := group
+	defer func() { s.emitG(p, "binding-delete", client, detail, optGrant(gi), err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -526,6 +594,11 @@ func (s *Service) DeleteBinding(p Principal, client, group string) (err error) {
 	}
 	old := slices.Clone(s.st.bindings)
 	n := len(s.st.bindings)
+	for _, b := range s.st.bindings {
+		if b.Client == client && b.Group == group {
+			detail = group + ": removed " + b.Template + " (approval " + b.Approval + ", owner " + b.Owner + ")"
+		}
+	}
 	s.st.bindings = slices.DeleteFunc(s.st.bindings, func(b Binding) bool { return b.Client == client && b.Group == group })
 	if len(s.st.bindings) == n {
 		return errf(ErrNotFound, "no such mapping")
@@ -566,8 +639,9 @@ func (s *Service) Managers(p Principal) ([]Manager, error) {
 // PutManager grants an identity the admin or audit role over a scope. The grantor needs the admin role over
 // that scope: a super-group administrator may delegate inside the super group; only a global administrator
 // grants rights over ALL.
-func (s *Service) PutManager(p Principal, identity, scope, role string) (err error) {
-	defer func() { s.emit(p, "manager-put", identity, scope+" "+role, err) }()
+func (s *Service) PutManager(p Principal, identity, scope, role string, gi GrantInfo) (err error) {
+	detail := scope + " " + role
+	defer func() { s.emitG(p, "manager-put", identity, detail, gi, err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -577,6 +651,9 @@ func (s *Service) PutManager(p Principal, identity, scope, role string) (err err
 	identity = strings.TrimSpace(identity)
 	if badIdent(identity) {
 		return errf(ErrInvalid, "identity must be a user or certificate name (no wildcard)")
+	}
+	if e := gi.validate(true); e != nil {
+		return e
 	}
 	if role != RoleAdmin && role != RoleAudit {
 		return errf(ErrInvalid, "role must be admin or audit")
@@ -592,18 +669,21 @@ func (s *Service) PutManager(p Principal, identity, scope, role string) (err err
 	old := slices.Clone(s.st.managers)
 	replaced := false
 	for i := range s.st.managers {
-		if s.st.managers[i].Identity == identity && s.st.managers[i].Scope == scope {
-			s.st.managers[i].Role, replaced = role, true
+		if m := &s.st.managers[i]; m.Identity == identity && m.Scope == scope {
+			detail = scope + ": " + m.Role + " (approval " + m.Approval + ", owner " + m.Owner + ") -> " + role
+			m.Role, m.Approval, m.Owner, m.GrantedBy, m.GrantedAt = role, gi.Approval, gi.Owner, p.Name, now()
+			replaced = true
 		}
 	}
 	if !replaced {
-		s.st.managers = append(s.st.managers, Manager{Identity: identity, Scope: scope, Role: role})
+		s.st.managers = append(s.st.managers, Manager{Identity: identity, Scope: scope, Role: role, Approval: gi.Approval, Owner: gi.Owner, GrantedBy: p.Name, GrantedAt: now()})
 	}
 	return s.persist(func() { s.st.managers = old })
 }
 
-func (s *Service) DeleteManager(p Principal, identity, scope string) (err error) {
-	defer func() { s.emit(p, "manager-delete", identity, scope, err) }()
+func (s *Service) DeleteManager(p Principal, identity, scope string, gi ...GrantInfo) (err error) {
+	detail := scope
+	defer func() { s.emitG(p, "manager-delete", identity, detail, optGrant(gi), err) }()
 	if e := adminOnly(p); e != nil {
 		return e
 	}
@@ -617,6 +697,11 @@ func (s *Service) DeleteManager(p Principal, identity, scope string) (err error)
 	}
 	old := slices.Clone(s.st.managers)
 	n := len(s.st.managers)
+	for _, m := range s.st.managers {
+		if m.Identity == identity && m.Scope == scope {
+			detail = scope + ": removed " + m.Role + " (approval " + m.Approval + ", owner " + m.Owner + ")"
+		}
+	}
 	s.st.managers = slices.DeleteFunc(s.st.managers, func(m Manager) bool { return m.Identity == identity && m.Scope == scope })
 	if len(s.st.managers) == n {
 		return errf(ErrNotFound, "no such management grant")

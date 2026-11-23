@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,6 +125,10 @@ func (s *Server) conn(c net.Conn) {
 	cancel()
 	if err != nil {
 		s.logf("kmip: handshake from %s failed: %v", c.RemoteAddr(), err)
+		if s.Access != nil { // failed authentication attempts are audit evidence
+			host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			s.Access.Add(logs.Entry{Plane: "client", Kind: "event", Who: "unknown", Op: "tls-handshake", Result: "denied: " + shortHandshake(err), Remote: host, Category: "authentication"})
+		}
 		return
 	}
 	st := tc.ConnectionState()
@@ -388,4 +393,18 @@ func i32(n int) int32 {
 		return -1 << 31
 	}
 	return int32(n)
+}
+
+// shortHandshake keeps the reason of a failed handshake without echoing peer-controlled text at length.
+func shortHandshake(err error) string {
+	m := err.Error()
+	if len(m) > 160 {
+		m = m[:160]
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, m)
 }

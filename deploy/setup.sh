@@ -37,6 +37,8 @@ issue kms            kms          "subjectAltName=DNS:kms,DNS:localhost,IP:127.0
 issue console        console      "$SAN_WEB"                                           serverAuth 825
 # the console's own identity towards the backend: it must be listed with -trusted-proxy
 issue console-client kms-console  "subjectAltName=DNS:kms-console"                     clientAuth 825
+# identity of the key server's self test: a client certificate that is granted nothing at all
+issue selfcheck      kms-selfcheck "subjectAltName=DNS:kms-selfcheck"                    clientAuth 825
 chmod 600 pki/*.key pki/ca.key
 chmod 644 pki/*.crt
 

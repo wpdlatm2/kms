@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
@@ -17,9 +18,13 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wpdlatm2/kms/internal/logs"
+	"github.com/wpdlatm2/kms/internal/restsrv"
+	"github.com/wpdlatm2/kms/internal/sysctl"
+	"github.com/wpdlatm2/kms/internal/syslogx"
 )
 
 //go:embed web
@@ -33,7 +38,7 @@ type Backend struct {
 }
 
 // forwarded paths of the administration API
-var allowed = map[string]bool{"me": true, "status": true, "catalog": true, "groups": true, "templates": true, "bindings": true, "managers": true, "keys": true, "logs": true}
+var allowed = map[string]bool{"me": true, "status": true, "catalog": true, "groups": true, "templates": true, "bindings": true, "managers": true, "keys": true, "logs": true, "audit": true}
 
 // Options configure the console.
 type Options struct {
@@ -41,25 +46,46 @@ type Options struct {
 	// enrolled must use it) or "off" (an enrolled user still must use it: the factor is never downgraded).
 	OTP    string
 	Issuer string // name shown in the authenticator app
+	// AuditKey authenticates the console log entries (HMAC); RetentionDays is the minimum retention of its files.
+	AuditKey      []byte
+	RetentionDays int
+	// Syslog forwards console audit entries to a collector (tcp://host:514 or tls://host:6514).
+	Syslog string
+	// Agent controls the services (nil = the dashboard is read-only); Probes are the ports the dashboard checks.
+	Agent  sysctl.Client
+	Probes []Probe
 }
 
 // Server is the HTTP handler of the console.
 type Server struct {
-	opts    Options
-	Users   *Users
-	Backend *Backend
-	Secure  bool // served over TLS: cookies get the Secure flag
-	sess    *sessions
-	thr     *throttle
-	log     *logs.Log
-	mux     *http.ServeMux
+	opts     Options
+	Users    *Users
+	Backend  *Backend
+	Secure   bool // served over TLS: cookies get the Secure flag
+	sess     *sessions
+	thr      *throttle
+	log      *logs.Log
+	mux      *http.ServeMux
+	sys      sysCache
+	sysLog   *syslogx.Logger
+	tr       sync.Mutex
+	trState  map[string]bool
+	started  time.Time
+	settings *SettingsStore
 }
 
 // New builds the server. logPath "" keeps the console log (logins, logouts) in memory.
 func New(b *Backend, u *Users, logPath string, secure bool, opts Options) (*Server, error) {
-	l, err := logs.Open(logPath, "console")
+	l, err := logs.OpenWith(logs.Options{Path: logPath, Name: "console", Key: opts.AuditKey, Retention: time.Duration(opts.RetentionDays) * 24 * time.Hour})
 	if err != nil {
 		return nil, err
+	}
+	if opts.Syslog != "" {
+		fw, err := logs.NewSyslogForwarder(opts.Syslog, "kmsadmin")
+		if err != nil {
+			return nil, err
+		}
+		l.AddSink(fw.Send)
 	}
 	if opts.OTP == "" {
 		opts.OTP = "required"
@@ -70,7 +96,16 @@ func New(b *Backend, u *Users, logPath string, secure bool, opts Options) (*Serv
 	if opts.Issuer == "" {
 		opts.Issuer = "pqc-kms"
 	}
-	s := &Server{opts: opts, Users: u, Backend: b, Secure: secure, sess: newSessions(8*time.Hour, 20*time.Minute), thr: newThrottle(), log: l, mux: http.NewServeMux()}
+	setPath := ""
+	if u.path != "" {
+		setPath = u.path + ".settings"
+	}
+	st, err := LoadSettings(setPath)
+	if err != nil {
+		return nil, err
+	}
+	cur := st.Get()
+	s := &Server{opts: opts, Users: u, Backend: b, Secure: secure, settings: st, sess: newSessions(time.Duration(cur.Session.TTLHours)*time.Hour, time.Duration(cur.Session.IdleMinutes)*time.Minute), thr: newThrottle(), log: l, mux: http.NewServeMux(), started: time.Now()}
 	sub, _ := fs.Sub(webFS, "web")
 	s.mux.Handle("GET /", http.FileServerFS(sub))
 	s.mux.HandleFunc("POST /api/login", s.login)
@@ -79,6 +114,19 @@ func New(b *Backend, u *Users, logPath string, secure bool, opts Options) (*Serv
 	s.mux.HandleFunc("GET /api/otp/setup", s.guardEnroll(s.otpSetup))
 	s.mux.HandleFunc("POST /api/otp/confirm", s.guardEnroll(s.otpConfirm))
 	s.mux.HandleFunc("GET /api/logs/console", s.guard(s.consoleLog))
+	s.mux.HandleFunc("POST /api/password", s.guardEnroll(s.changePassword))
+	s.mux.HandleFunc("GET /api/users", s.guard(s.listUsers))
+	s.mux.HandleFunc("POST /api/users", s.guard(s.createUser))
+	for _, a := range []string{"unlock", "reset-password", "reset-otp"} {
+		s.mux.HandleFunc("POST /api/users/{name}/"+a, s.guard(s.userAction(a)))
+	}
+	s.mux.HandleFunc("GET /api/settings", s.guard(s.getSettings))
+	s.mux.HandleFunc("PUT /api/settings", s.guard(s.putSettings))
+	s.mux.HandleFunc("GET /api/system", s.guard(s.system))
+	s.mux.HandleFunc("POST /api/system/services/{name}/{action}", s.guard(s.control))
+	s.mux.HandleFunc("GET /api/audit/verify", s.guard(s.auditLocalOrForward(s.consoleVerify)))
+	s.mux.HandleFunc("GET /api/audit/export", s.guard(s.auditLocalOrForward(s.consoleExport)))
+	s.mux.HandleFunc("POST /api/audit/reviews", s.guard(s.consoleReview))
 	for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
 		s.mux.HandleFunc(m+" /api/{path...}", s.guard(s.forward))
 	}
@@ -150,12 +198,17 @@ func (s *Server) guardMode(h ctxHandler, allowEnroll bool) http.HandlerFunc {
 			fail(w, http.StatusUnauthorized, "not signed in")
 			return
 		}
-		if ss.EnrollOnly && !allowEnroll {
-			fail(w, http.StatusForbidden, "enroll the one-time password (OTP) first")
+		if (ss.EnrollOnly || ss.ChangeOnly) && !allowEnroll {
+			if ss.ChangeOnly {
+				fail(w, http.StatusForbidden, "change the password first")
+			} else {
+				fail(w, http.StatusForbidden, "enroll the one-time password (OTP) first")
+			}
 			return
 		}
 		if r.Method != http.MethodGet {
 			if !sameOrigin(r) || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(ss.CSRF)) != 1 {
+				s.authEvent(r, ss.User, "csrf-rejected", logs.OutcomeDenied, "CSRF check failed", r.Method+" "+r.URL.Path)
 				fail(w, http.StatusForbidden, "CSRF check failed")
 				return
 			}
@@ -181,21 +234,49 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	key := ip + "|" + strings.ToLower(req.User)
+	set, now := s.settings.Get(), time.Now()
+	deny := func(reason string) {
+		time.Sleep(400 * time.Millisecond)
+		fail(w, http.StatusUnauthorized, "invalid user or password, or the account is locked")
+		_ = reason
+	}
 	if s.thr.blocked(key) || s.thr.blocked(ip) {
-		s.note(req.User, "login", "blocked: too many failures", ip)
+		s.authEvent(r, req.User, "login-failed", logs.OutcomeDenied, "too many failures from this address", "")
 		fail(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
 		return
 	}
-	u, ok := s.Users.Verify(req.User, req.Password)
-	if !ok {
+	_, known := s.Users.Account(req.User, set, now)
+	if known && s.Users.IsLocked(req.User, now) {
 		s.thr.fail(key)
-		s.thr.fail(ip)
-		s.note(req.User, "login", "error: bad credentials", ip)
-		time.Sleep(400 * time.Millisecond)
-		fail(w, http.StatusUnauthorized, "invalid user or password")
+		s.authEvent(r, req.User, "login-failed", logs.OutcomeDenied, "account locked", "")
+		deny("locked")
 		return
 	}
-	enrollOnly := false
+	failure := func(reason string) {
+		s.thr.fail(key)
+		s.thr.fail(ip)
+		s.authEvent(r, req.User, "login-failed", logs.OutcomeFailure, reason, "")
+		if known && s.Users.RecordFail(req.User, set.Lockout, now) {
+			d := itoa(set.Lockout.MaxFails) + " failures within " + itoa(set.Lockout.WindowMinutes) + " minutes"
+			if set.Lockout.LockMinutes == 0 {
+				d += "; locked until an administrator unlocks"
+			} else {
+				d += "; locked for " + itoa(set.Lockout.LockMinutes) + " minutes"
+			}
+			s.authEvent(r, req.User, "account-locked", logs.OutcomeDenied, "too many failures", d)
+		}
+	}
+	u, ok := s.Users.Verify(req.User, req.Password)
+	if !ok {
+		reason := "bad password"
+		if !known {
+			reason = "unknown user"
+		}
+		failure(reason)
+		deny(reason)
+		return
+	}
+	enrollOnly, otpNote := false, "otp=none"
 	switch {
 	case s.Users.HasOTP(u.Name):
 		if strings.TrimSpace(req.OTP) == "" {
@@ -205,25 +286,36 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		}
 		good, recovery := s.Users.VerifyOTP(u.Name, req.OTP, time.Now())
 		if !good {
-			s.thr.fail(key)
-			s.thr.fail(ip)
-			s.note(u.Name, "login", "error: bad one-time password", ip)
+			failure("bad one-time password")
 			time.Sleep(400 * time.Millisecond)
 			fail(w, http.StatusUnauthorized, "invalid one-time password")
 			return
 		}
+		otpNote = "otp=used"
 		if recovery {
-			s.note(u.Name, "otp-recovery-code-used", "ok ("+itoa(s.Users.RecoveryLeft(u.Name))+" left)", ip)
+			otpNote = "otp=recovery-code"
+			s.authEvent(r, u.Name, "otp-recovery-code-used", logs.OutcomeSuccess, "", itoa(s.Users.RecoveryLeft(u.Name))+" left")
 		}
 	case s.opts.OTP == "required":
 		enrollOnly = true
 	}
 	s.thr.reset(key)
+	s.Users.RecordSuccess(u.Name, ip, now)
+	mustChange, why := s.Users.MustChangeNow(u.Name, set, now)
 	tok, ss := s.sess.create(u.Name, enrollOnly)
+	if mustChange {
+		s.sess.mu.Lock()
+		ss.ChangeOnly = true
+		s.sess.mu.Unlock()
+	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, // #nosec G124 -- Secure follows the TLS setting: plain HTTP is only allowed on loopback
 		Path: "/", HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: int(s.sess.ttl.Seconds())})
-	s.note(u.Name, "login", "ok", ip)
-	writeJSON(w, 200, map[string]any{"user": ss.User, "csrf": ss.CSRF, "enrollRequired": enrollOnly})
+	detail := otpNote + "; session=" + sessionDigest(tok)
+	if mustChange {
+		detail += "; password change required (" + why + ")"
+	}
+	s.log.Add(logs.Entry{Plane: "console", Kind: "event", Who: u.Name, Op: "login", Category: "authentication", Outcome: logs.OutcomeSuccess, Result: "ok", Detail: detail + "; ua=" + userAgent(r), Remote: ip, Session: sessionDigest(tok)})
+	writeJSON(w, 200, map[string]any{"user": ss.User, "csrf": ss.CSRF, "enrollRequired": enrollOnly, "passwordChangeRequired": mustChange, "passwordChangeReason": why})
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -234,7 +326,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, ss *session) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, // #nosec G124 -- see the login cookie
 		Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	s.note(ss.User, "logout", "ok", clientIP(r))
+	s.log.Add(logs.Entry{Plane: "console", Kind: "event", Who: ss.User, Op: "logout", Category: "authentication", Outcome: logs.OutcomeSuccess, Result: "ok", Remote: clientIP(r), Session: sessionDigest(s.tokenOf(r))})
 	writeJSON(w, 200, map[string]string{"ok": "bye"})
 }
 
@@ -263,8 +355,8 @@ func (b *Backend) call(method, path, rawQuery, user, contentType string, body io
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request, ss *session) {
-	if ss.EnrollOnly {
-		writeJSON(w, 200, map[string]any{"user": ss.User, "csrf": ss.CSRF, "enrollRequired": true})
+	if ss.EnrollOnly || ss.ChangeOnly {
+		writeJSON(w, 200, map[string]any{"user": ss.User, "csrf": ss.CSRF, "enrollRequired": ss.EnrollOnly, "passwordChangeRequired": ss.ChangeOnly})
 		return
 	}
 	code, _, raw, err := s.Backend.call("GET", "me", "", ss.User, "", nil)
@@ -278,25 +370,128 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request, ss *session) {
 		return
 	}
 	me["user"], me["csrf"] = ss.User, ss.CSRF
+	if a, ok := s.Users.Account(ss.User, s.settings.Get(), time.Now()); ok {
+		me["password"] = map[string]any{"expiresInDays": a.ExpiresInDays, "warnDays": s.settings.Get().Password.WarnDays}
+	}
 	me["otp"] = map[string]any{"enrolled": s.Users.HasOTP(ss.User), "recoveryCodesLeft": s.Users.RecoveryLeft(ss.User), "policy": s.opts.OTP}
 	writeJSON(w, 200, me)
 }
 
-func (s *Server) consoleLog(w http.ResponseWriter, r *http.Request, ss *session) {
+// isAuditor asks the backend whether the user holds a global role (admin or audit).
+func (s *Server) isAuditor(ss *session) bool {
 	code, _, raw, err := s.Backend.call("GET", "me", "", ss.User, "", nil)
 	var me struct {
 		Global bool `json:"global"`
 	}
-	if err != nil || code != 200 || json.Unmarshal(raw, &me) != nil || !me.Global {
+	return err == nil && code == 200 && json.Unmarshal(raw, &me) == nil && me.Global
+}
+
+func (s *Server) consoleLog(w http.ResponseWriter, r *http.Request, ss *session) {
+	if !s.isAuditor(ss) {
 		fail(w, http.StatusForbidden, "the console log is readable by global administrators and auditors only")
 		return
 	}
-	writeJSON(w, 200, s.log.Last(500))
+	f, err := restsrv.FilterFromQuery(r.URL.Query())
+	if err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if f.Limit == 0 || f.Limit > 2000 {
+		f.Limit = 500
+	}
+	ents, err := s.log.Query(f)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "cannot read the log")
+		return
+	}
+	s.note(ss.User, "audit-view", "ok", clientIP(r))
+	writeJSON(w, 200, ents)
+}
+
+// auditLocalOrForward serves the audit functions of the console's own log here and passes the others on.
+func (s *Server) auditLocalOrForward(local ctxHandler) ctxHandler {
+	return func(w http.ResponseWriter, r *http.Request, ss *session) {
+		if r.URL.Query().Get("log") != "console" {
+			s.forward(w, r, ss)
+			return
+		}
+		if !s.isAuditor(ss) {
+			fail(w, http.StatusForbidden, "audit data is available to global administrators and auditors only")
+			return
+		}
+		local(w, r, ss)
+	}
+}
+
+func (s *Server) consoleVerify(w http.ResponseWriter, r *http.Request, ss *session) {
+	rep, err := s.log.Verify(s.opts.AuditKey)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "cannot read the log")
+		return
+	}
+	res := "ok"
+	if !rep.OK {
+		res = "error: integrity violation: " + rep.Problem
+	}
+	s.note(ss.User, "audit-verify", res, clientIP(r))
+	writeJSON(w, 200, rep)
+}
+
+func (s *Server) consoleExport(w http.ResponseWriter, r *http.Request, ss *session) {
+	f, err := restsrv.FilterFromQuery(r.URL.Query())
+	if err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var buf bytes.Buffer
+	m, err := s.log.Export(&buf, f, ss.User, s.opts.AuditKey)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "cannot export")
+		return
+	}
+	s.log.Add(logs.Entry{Plane: "console", Kind: "event", Who: ss.User, Op: "audit-export", Target: "console", Result: "ok", Remote: clientIP(r),
+		Detail: "entries=" + itoa(m.Entries) + " sha256=" + m.DataSHA256})
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="audit-console-`+time.Now().UTC().Format("20060102-150405")+`.zip"`)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// consoleReview records a review of the console log here and passes reviews of the other logs on.
+func (s *Server) consoleReview(w http.ResponseWriter, r *http.Request, ss *session) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err != nil {
+		fail(w, http.StatusRequestEntityTooLarge, "request too large")
+		return
+	}
+	var in struct {
+		Log, From, To, Finding, Note string
+	}
+	_ = json.Unmarshal(body, &in)
+	if in.Log != "console" {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		s.forward(w, r, ss)
+		return
+	}
+	if !s.isAuditor(ss) {
+		fail(w, http.StatusForbidden, "audit data is available to global administrators and auditors only")
+		return
+	}
+	if (in.Finding != "none" && in.Finding != "anomaly") || in.From == "" || in.To == "" || len(in.Note) > 1000 || len(in.From) > 40 || len(in.To) > 40 ||
+		strings.ContainsAny(in.Note+in.From+in.To, "\x00\r\n") || (in.Finding == "anomaly" && strings.TrimSpace(in.Note) == "") {
+		fail(w, http.StatusBadRequest, "from, to, finding (none|anomaly) and a note of at most 1000 characters are required")
+		return
+	}
+	s.log.Add(logs.Entry{Plane: "console", Kind: "event", Who: ss.User, Op: "audit-review", Target: "console", Result: "ok", Remote: clientIP(r), Category: "audit-access",
+		Detail: "period " + in.From + " .. " + in.To + "; finding=" + in.Finding + "; " + in.Note})
+	writeJSON(w, 201, map[string]any{"result": "recorded", "reviewer": ss.User})
 }
 
 // forward passes an allowed request to the administration API as the signed-in user.
 func (s *Server) forward(w http.ResponseWriter, r *http.Request, ss *session) {
 	path := r.PathValue("path")
+	if path == "" { // reached through a specific route (audit/...)
+		path = strings.TrimPrefix(r.URL.Path, "/api/")
+	}
 	first, _, _ := strings.Cut(path, "/")
 	if !allowed[first] || strings.Contains(path, "..") {
 		fail(w, http.StatusNotFound, "unknown endpoint")
@@ -309,7 +504,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, ss *session) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-	code, _, raw, err := s.Backend.call(r.Method, path, r.URL.RawQuery, ss.User, r.Header.Get("Content-Type"), r.Body)
+	code, hdr, raw, err := s.Backend.call(r.Method, path, r.URL.RawQuery, ss.User, r.Header.Get("Content-Type"), r.Body)
 	if err != nil {
 		var mb *http.MaxBytesError
 		if errors.As(err, &mb) {
@@ -320,8 +515,13 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, ss *session) {
 		fail(w, http.StatusBadGateway, "the key management server is not reachable: "+err.Error())
 		return
 	}
-	// the backend answers JSON only: do not pass its content type on, state it
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// the backend answers JSON only (except the evidence export): do not pass its content type on, state it
+	if path == "audit/export" && code == 200 {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", resp1(hdr.Get("Content-Disposition")))
+	} else {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
 	w.WriteHeader(code)
 	_, _ = w.Write(raw) // #nosec G705 -- JSON from the backend with a fixed content type and nosniff
 }
@@ -416,4 +616,12 @@ func (s *Server) otpConfirm(w http.ResponseWriter, r *http.Request, ss *session)
 	s.sess.finishEnroll(ss)
 	s.note(ss.User, "otp-enroll", "ok", ip)
 	writeJSON(w, 200, map[string]any{"enrolled": true, "recoveryCodes": plain})
+}
+
+// resp1 passes on the attachment name of an export only if it has the expected shape.
+func resp1(v string) string {
+	if strings.HasPrefix(v, `attachment; filename="audit-`) && !strings.ContainsAny(v, "\r\n") && len(v) < 120 {
+		return v
+	}
+	return `attachment; filename="audit.zip"`
 }

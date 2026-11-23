@@ -173,7 +173,7 @@ func TestOTPEnrollmentAndLoginFlow(t *testing.T) {
 	c.csrf = lr["csrf"].(string)
 	c.must(403, "GET", "/api/keys", nil)
 	c.must(403, "GET", "/api/catalog", nil)
-	c.must(403, "POST", "/api/groups", map[string]any{"name": "x", "kind": "super"})
+	c.must(403, "POST", "/api/groups", map[string]any{"name": "x", "kind": "super", "owner": "tester"})
 	var me map[string]any
 	json.Unmarshal(c.must(200, "GET", "/api/me", nil), &me)
 	if me["enrollRequired"] != true {

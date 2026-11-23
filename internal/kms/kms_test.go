@@ -48,12 +48,12 @@ func wantCode(t *testing.T, err error, c ErrCode, what string) {
 func topology(t *testing.T) (*Service, string) {
 	s, dir := newSvc(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "division", Kind: KindSuper}, true))
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "other", Kind: KindSuper}, true))
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "pay", Kind: KindService, Parent: "division"}, true))
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "ledger", Kind: KindService, Parent: "division"}, true))
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "mail", Kind: KindService, Parent: "other"}, true))
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "solo", Kind: KindService}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "division", Kind: KindSuper}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "other", Kind: KindSuper}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "pay", Kind: KindService, Parent: "division"}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "ledger", Kind: KindService, Parent: "division"}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "mail", Kind: KindService, Parent: "other"}, true))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "solo", Kind: KindService}, true))
 	return s, dir
 }
 
@@ -74,7 +74,7 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("templates %v", names)
 	}
 	// the built-ins are editable but not deletable; ALL is not deletable
-	mustNil(t, s.PutTemplate(root, "guest", "read", []string{"locate", "getattributes"}, false))
+	mustNil(t, s.PutTemplate(root, "guest", "read", []string{"locate", "getattributes"}, false, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	wantCode(t, s.DeleteTemplate(root, "owner"), ErrInvalid, "delete built-in template")
 	wantCode(t, s.DeleteGroup(root, GroupAll), ErrInvalid, "delete ALL")
 }
@@ -88,8 +88,8 @@ func TestClientRightsFollowBindings(t *testing.T) {
 	_, err := s.Create(alice, CreateReq{Algo: "aes-256", Group: "pay"})
 	wantCode(t, err, ErrDenied, "create without binding")
 
-	mustNil(t, s.PutBinding(root, "alice", "pay", "owner"))
-	mustNil(t, s.PutBinding(root, "bob", "pay", "guest"))
+	mustNil(t, s.PutBinding(root, "alice", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutBinding(root, "bob", "pay", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	ks, err := s.Create(alice, CreateReq{Algo: "aes-256", Group: "pay", Names: []string{"k1"}, Activate: true})
 	mustNil(t, err)
 	id := ks[0].ID
@@ -109,7 +109,7 @@ func TestClientRightsFollowBindings(t *testing.T) {
 	wantCode(t, err, ErrNotFound, "guest destroy")
 
 	// a client of another group cannot even see it
-	mustNil(t, s.PutBinding(root, "carol", "ledger", "owner"))
+	mustNil(t, s.PutBinding(root, "carol", "ledger", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	carol := ClientPrincipal("carol")
 	if got := s.Locate(carol, Filter{}); len(got) != 0 {
 		t.Fatalf("carol sees keys of another service: %v", got)
@@ -132,9 +132,9 @@ func TestClientRightsFollowBindings(t *testing.T) {
 func TestSuperGroupAndALLBindings(t *testing.T) {
 	s, _ := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutBinding(root, "owner-ish", "pay", "owner"))
-	mustNil(t, s.PutBinding(root, "owner-ish", "ledger", "owner"))
-	mustNil(t, s.PutBinding(root, "owner-ish", "mail", "owner"))
+	mustNil(t, s.PutBinding(root, "owner-ish", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutBinding(root, "owner-ish", "ledger", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutBinding(root, "owner-ish", "mail", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	oi := ClientPrincipal("owner-ish")
 	var kp, kl, km string
 	for svc, dst := range map[string]*string{"pay": &kp, "ledger": &kl, "mail": &km} {
@@ -144,7 +144,7 @@ func TestSuperGroupAndALLBindings(t *testing.T) {
 	}
 
 	// guest on the super group "division" reads pay and ledger, not mail
-	mustNil(t, s.PutBinding(root, "auditor-app", "division", "guest"))
+	mustNil(t, s.PutBinding(root, "auditor-app", "division", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	ap := ClientPrincipal("auditor-app")
 	if _, err := s.GetMaterial(ap, kp); err != nil {
 		t.Fatalf("super-group guest cannot read pay: %v", err)
@@ -160,13 +160,13 @@ func TestSuperGroupAndALLBindings(t *testing.T) {
 	wantCode(t, err, ErrDenied, "guest of a super group creates")
 
 	// moving a service changes who inherits
-	mustNil(t, s.PutGroup(root, GroupReq{Name: "mail", Kind: KindService, Parent: "division"}, false))
+	mustNil(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "mail", Kind: KindService, Parent: "division"}, false))
 	if _, err := s.GetMaterial(ap, km); err != nil {
 		t.Fatalf("after moving mail under division the guest should read it: %v", err)
 	}
 
 	// ALL: owner everywhere, regardless of group, including a service without any super group
-	mustNil(t, s.PutBinding(root, "super-app", GroupAll, "owner"))
+	mustNil(t, s.PutBinding(root, "super-app", GroupAll, "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	sa := ClientPrincipal("super-app")
 	v, err := s.Create(sa, CreateReq{Algo: "ed25519", Group: "solo"})
 	mustNil(t, err)
@@ -179,7 +179,7 @@ func TestSuperGroupAndALLBindings(t *testing.T) {
 		}
 	}
 	// ALL guest: read everything, change nothing
-	mustNil(t, s.PutBinding(root, "reader", GroupAll, "guest"))
+	mustNil(t, s.PutBinding(root, "reader", GroupAll, "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	rd := ClientPrincipal("reader")
 	if _, err := s.GetMaterial(rd, kp); err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestSuperGroupAndALLBindings(t *testing.T) {
 func TestKeyNeedsExactlyOneService(t *testing.T) {
 	s, _ := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutBinding(root, "app", "pay", "owner"))
+	mustNil(t, s.PutBinding(root, "app", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	app := ClientPrincipal("app")
 	// no group given: allowed when the client has exactly one service to create in
 	v, err := s.Create(app, CreateReq{Algo: "aes-256"})
@@ -204,7 +204,7 @@ func TestKeyNeedsExactlyOneService(t *testing.T) {
 	if v[0].Group != "pay" {
 		t.Fatalf("default group %q", v[0].Group)
 	}
-	mustNil(t, s.PutBinding(root, "app", "ledger", "owner"))
+	mustNil(t, s.PutBinding(root, "app", "ledger", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	_, err = s.Create(app, CreateReq{Algo: "aes-256"})
 	wantCode(t, err, ErrInvalid, "ambiguous default group")
 	_, err = s.Create(app, CreateReq{Algo: "aes-256", Group: "nope"})
@@ -228,10 +228,10 @@ func TestAdministratorsNeverGetKeyValues(t *testing.T) {
 func TestScopedAdministration(t *testing.T) {
 	s, _ := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutManager(root, "dora", "division", RoleAdmin))
-	mustNil(t, s.PutManager(root, "olaf", "other", RoleAdmin))
-	mustNil(t, s.PutManager(root, "ava", "division", RoleAudit))
-	mustNil(t, s.PutManager(root, "pavel", "pay", RoleAdmin))
+	mustNil(t, s.PutManager(root, "dora", "division", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutManager(root, "olaf", "other", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutManager(root, "ava", "division", RoleAudit, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutManager(root, "pavel", "pay", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	dora, olaf, ava, pavel := s.AdminPrincipal("dora"), s.AdminPrincipal("olaf"), s.AdminPrincipal("ava"), s.AdminPrincipal("pavel")
 
 	// dora: services of "division" only
@@ -239,17 +239,17 @@ func TestScopedAdministration(t *testing.T) {
 	mustNil(t, err)
 	_, err = s.Create(dora, CreateReq{Algo: "aes-256", Group: "mail"})
 	wantCode(t, err, ErrDenied, "division admin creates in another division")
-	mustNil(t, s.PutGroup(dora, GroupReq{Name: "billing", Kind: KindService, Parent: "division"}, true))
-	wantCode(t, s.PutGroup(dora, GroupReq{Name: "rogue", Kind: KindService, Parent: "other"}, true), ErrDenied, "create service under another super group")
-	wantCode(t, s.PutGroup(dora, GroupReq{Name: "free", Kind: KindService}, true), ErrDenied, "create parentless service")
-	wantCode(t, s.PutGroup(dora, GroupReq{Name: "newsuper", Kind: KindSuper}, true), ErrDenied, "create super group")
-	wantCode(t, s.PutGroup(dora, GroupReq{Name: "mail", Kind: KindService, Parent: "division"}, false), ErrDenied, "steal a service")
-	mustNil(t, s.PutBinding(dora, "app1", "pay", "owner"))
-	mustNil(t, s.PutBinding(dora, "app1", "division", "guest"))
-	wantCode(t, s.PutBinding(dora, "app1", "mail", "owner"), ErrDenied, "bind outside the scope")
-	wantCode(t, s.PutBinding(dora, "app1", GroupAll, "owner"), ErrDenied, "bind to ALL")
-	wantCode(t, s.PutTemplate(dora, "mine", "", []string{"get"}, true), ErrDenied, "template edit by a scoped admin")
-	wantCode(t, s.PutTemplate(dora, "guest", "", []string{"destroy"}, false), ErrDenied, "edit built-in by a scoped admin")
+	mustNil(t, s.PutGroup(dora, GroupReq{Owner: "tester", Name: "billing", Kind: KindService, Parent: "division"}, true))
+	wantCode(t, s.PutGroup(dora, GroupReq{Owner: "tester", Name: "rogue", Kind: KindService, Parent: "other"}, true), ErrDenied, "create service under another super group")
+	wantCode(t, s.PutGroup(dora, GroupReq{Owner: "tester", Name: "free", Kind: KindService}, true), ErrDenied, "create parentless service")
+	wantCode(t, s.PutGroup(dora, GroupReq{Owner: "tester", Name: "newsuper", Kind: KindSuper}, true), ErrDenied, "create super group")
+	wantCode(t, s.PutGroup(dora, GroupReq{Owner: "tester", Name: "mail", Kind: KindService, Parent: "division"}, false), ErrDenied, "steal a service")
+	mustNil(t, s.PutBinding(dora, "app1", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutBinding(dora, "app1", "division", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	wantCode(t, s.PutBinding(dora, "app1", "mail", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "bind outside the scope")
+	wantCode(t, s.PutBinding(dora, "app1", GroupAll, "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "bind to ALL")
+	wantCode(t, s.PutTemplate(dora, "mine", "", []string{"get"}, true, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "template edit by a scoped admin")
+	wantCode(t, s.PutTemplate(dora, "guest", "", []string{"destroy"}, false, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "edit built-in by a scoped admin")
 
 	// dora sees only her world
 	gs, _ := s.Groups(dora)
@@ -268,11 +268,11 @@ func TestScopedAdministration(t *testing.T) {
 		}
 	}
 	// delegation inside the scope, not beyond
-	mustNil(t, s.PutManager(dora, "ned", "ledger", RoleAdmin))
-	wantCode(t, s.PutManager(dora, "ned", "mail", RoleAdmin), ErrDenied, "delegate outside scope")
-	wantCode(t, s.PutManager(dora, "ned", GroupAll, RoleAdmin), ErrDenied, "delegate ALL")
-	wantCode(t, s.PutManager(pavel, "x", "division", RoleAdmin), ErrDenied, "service admin delegates upwards")
-	mustNil(t, s.PutManager(pavel, "y", "pay", RoleAudit))
+	mustNil(t, s.PutManager(dora, "ned", "ledger", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	wantCode(t, s.PutManager(dora, "ned", "mail", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "delegate outside scope")
+	wantCode(t, s.PutManager(dora, "ned", GroupAll, RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "delegate ALL")
+	wantCode(t, s.PutManager(pavel, "x", "division", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "service admin delegates upwards")
+	mustNil(t, s.PutManager(pavel, "y", "pay", RoleAudit, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 
 	// audit: read only
 	if _, err := s.Attributes(ava, v[0].ID); err != nil {
@@ -282,7 +282,7 @@ func TestScopedAdministration(t *testing.T) {
 	wantCode(t, err, ErrDenied, "audit creates")
 	_, err = s.Activate(ava, v[0].ID)
 	wantCode(t, err, ErrDenied, "audit activates")
-	wantCode(t, s.PutBinding(ava, "z", "pay", "guest"), ErrDenied, "audit binds")
+	wantCode(t, s.PutBinding(ava, "z", "pay", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "audit binds")
 	if _, err := s.Managers(ava); err != nil {
 		t.Fatalf("audit lists managers: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestScopedAdministration(t *testing.T) {
 	if _, err := s.Activate(pavel, v[0].ID); err != nil {
 		t.Fatalf("service admin cannot activate: %v", err)
 	}
-	wantCode(t, s.PutBinding(pavel, "q", "division", "guest"), ErrDenied, "service admin binds the super group")
+	wantCode(t, s.PutBinding(pavel, "q", "division", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrDenied, "service admin binds the super group")
 
 	// removing the scope removes the right
 	mustNil(t, s.DeleteManager(dora, "ned", "ledger"))
@@ -310,22 +310,22 @@ func TestScopedAdministration(t *testing.T) {
 func TestDeletionRules(t *testing.T) {
 	s, _ := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutBinding(root, "app", "pay", "owner"))
+	mustNil(t, s.PutBinding(root, "app", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	v, err := s.Create(root, CreateReq{Algo: "aes-128", Group: "pay"})
 	mustNil(t, err)
 	wantCode(t, s.DeleteGroup(root, "pay"), ErrConflict, "delete service with keys")
 	wantCode(t, s.DeleteGroup(root, "division"), ErrConflict, "delete super group with services")
-	wantCode(t, s.PutGroup(root, GroupReq{Name: "pay", Kind: KindService}, true), ErrConflict, "duplicate group")
-	mustNil(t, s.PutTemplate(root, "rotator", "", []string{"locate", "getattributes", "rekey"}, true))
-	mustNil(t, s.PutBinding(root, "bot", "pay", "rotator"))
+	wantCode(t, s.PutGroup(root, GroupReq{Owner: "tester", Name: "pay", Kind: KindService}, true), ErrConflict, "duplicate group")
+	mustNil(t, s.PutTemplate(root, "rotator", "", []string{"locate", "getattributes", "rekey"}, true, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutBinding(root, "bot", "pay", "rotator", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	wantCode(t, s.DeleteTemplate(root, "rotator"), ErrConflict, "delete a template in use")
 	mustNil(t, s.DeleteBinding(root, "bot", "pay"))
 	mustNil(t, s.DeleteTemplate(root, "rotator"))
-	wantCode(t, s.PutBinding(root, "x", "pay", "ghost"), ErrInvalid, "unknown template")
-	wantCode(t, s.PutBinding(root, "x", "ghost", "owner"), ErrInvalid, "unknown group")
-	wantCode(t, s.PutBinding(root, "*", "pay", "owner"), ErrInvalid, "wildcard client")
-	wantCode(t, s.PutTemplate(root, "bad", "", []string{"fly"}, true), ErrInvalid, "unknown operation")
-	wantCode(t, s.PutTemplate(root, "empty", "", nil, true), ErrInvalid, "empty template")
+	wantCode(t, s.PutBinding(root, "x", "pay", "ghost", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrInvalid, "unknown template")
+	wantCode(t, s.PutBinding(root, "x", "ghost", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrInvalid, "unknown group")
+	wantCode(t, s.PutBinding(root, "*", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrInvalid, "wildcard client")
+	wantCode(t, s.PutTemplate(root, "bad", "", []string{"fly"}, true, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrInvalid, "unknown operation")
+	wantCode(t, s.PutTemplate(root, "empty", "", nil, true, GrantInfo{Approval: "APR-T1", Owner: "tester"}), ErrInvalid, "empty template")
 	_, err = s.Deactivate(root, v[0].ID) // PreActive cannot be deactivated
 	wantCode(t, err, ErrState, "deactivate pre-active")
 	_, err = s.Destroy(root, v[0].ID)
@@ -333,7 +333,7 @@ func TestDeletionRules(t *testing.T) {
 	// destroyed keys remain as records, so their service cannot be deleted; an empty one can, with its mappings
 	wantCode(t, s.DeleteGroup(root, "pay"), ErrConflict, "delete service with destroyed records")
 	mustNil(t, s.DeleteGroup(root, "solo"))
-	mustNil(t, s.PutBinding(root, "tmp", "ledger", "guest"))
+	mustNil(t, s.PutBinding(root, "tmp", "ledger", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	mustNil(t, s.DeleteGroup(root, "ledger"))
 	for _, b := range mustBindings(t, s, root) {
 		if b.Group == "ledger" {
@@ -351,14 +351,14 @@ func mustBindings(t *testing.T, s *Service, p Principal) []Binding {
 func TestTemplateEditTakesEffectImmediately(t *testing.T) {
 	s, _ := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutBinding(root, "app", "pay", "guest"))
+	mustNil(t, s.PutBinding(root, "app", "pay", "guest", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	v, err := s.Create(root, CreateReq{Algo: "aes-128", Group: "pay", Activate: true})
 	mustNil(t, err)
 	app := ClientPrincipal("app")
 	if _, err := s.GetMaterial(app, v[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	mustNil(t, s.PutTemplate(root, "guest", "no value release", []string{"locate", "getattributes"}, false))
+	mustNil(t, s.PutTemplate(root, "guest", "no value release", []string{"locate", "getattributes"}, false, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	if _, err := s.GetMaterial(app, v[0].ID); err == nil {
 		t.Fatal("guest still gets the key value after 'get' was removed from the template")
 	}
@@ -370,8 +370,8 @@ func TestTemplateEditTakesEffectImmediately(t *testing.T) {
 func TestPersistenceAndTamperDetection(t *testing.T) {
 	s, dir := topology(t)
 	root := s.AdminPrincipal("root")
-	mustNil(t, s.PutBinding(root, "app", "pay", "owner"))
-	mustNil(t, s.PutManager(root, "dora", "division", RoleAdmin))
+	mustNil(t, s.PutBinding(root, "app", "pay", "owner", GrantInfo{Approval: "APR-T1", Owner: "tester"}))
+	mustNil(t, s.PutManager(root, "dora", "division", RoleAdmin, GrantInfo{Approval: "APR-T1", Owner: "tester"}))
 	v, err := s.Create(ClientPrincipal("app"), CreateReq{Algo: "ml-dsa-65", Group: "pay", Names: []string{"sig"}, Activate: true})
 	mustNil(t, err)
 	if len(v) != 2 || v[0].Kind != KindPrivate || v[1].Kind != KindPublic || v[0].PairID != v[1].ID {
